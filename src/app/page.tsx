@@ -432,16 +432,6 @@ function GarcomApp() {
             <div className="sub">Olá, {session.name}</div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="icon-btn" onClick={() => setView('menu')}>
-              🍽️ Cardápio
-            </button>
-            <button
-              className="icon-btn"
-              onClick={() => setView('settings')}
-              aria-label="Ajustes"
-            >
-              ⚙️ Ajustes
-            </button>
             <button className="icon-btn" onClick={handleLogout}>
               Sair
             </button>
@@ -591,7 +581,8 @@ function GarcomApp() {
             <>
               {categories.length === 0 ? (
                 <div className="empty">
-                  Nenhum produto cadastrado. Cadastre o cardápio em Ajustes.
+                  Nenhum produto cadastrado. Peça ao dono para cadastrar o
+                  cardápio.
                 </div>
               ) : (
                 <div className="cat-grid">
