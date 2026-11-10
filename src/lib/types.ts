@@ -1,5 +1,11 @@
 export type PrintsIn = 'kitchen' | 'bar';
 
+/** Tipo da bebida (só quando prints_in = 'bar') — define as opções
+ * de "Como servir": refrigerante → 4 quadradinhos de copo; cerveja →
+ * "Precisa de copos?" (+ quantidade); torre → "Quantas canecas?";
+ * outro → sem opções (vai direto pro pedido). */
+export type DrinkType = 'refrigerante' | 'cerveja' | 'torre' | 'outro';
+
 export interface Waiter {
   id: string;
   name: string;
@@ -15,6 +21,8 @@ export interface Product {
   price_cents: number;
   category: string;
   prints_in: PrintsIn;
+  /** Tipo da bebida (só bar) — sem ele, bebida se comporta como refrigerante. */
+  drink_type?: DrinkType | null;
   /** O que vem no prato (só comida) — opcional, vai na via da cozinha. */
   description?: string | null;
   created_at: string;
@@ -25,6 +33,8 @@ export interface Settings {
   service_fee_pct: number;
   /** quantidade de mesas (padrão 12) */
   table_count: number;
+  /** próximo número do pedido — sequencial, "Pedido Nº 0001" */
+  order_seq?: number;
 }
 
 export interface OrderItem {

@@ -95,7 +95,11 @@ export async function hashPassword(password: string): Promise<string> {
   return (h2 >>> 0).toString(16) + (h1 >>> 0).toString(16);
 }
 
-export const DEFAULT_SETTINGS: Settings = { service_fee_pct: 3, table_count: 12 };
+export const DEFAULT_SETTINGS: Settings = {
+  service_fee_pct: 3,
+  table_count: 12,
+  order_seq: 0,
+};
 
 /* ------------------------------------------------------------------ */
 /* Modo local (localStorage) — usado quando o Supabase não está        */
@@ -109,6 +113,8 @@ interface LocalDb {
   orders: Order[];
   items: OrderItem[];
   bills: ClosedBill[];
+  /** contador do número do pedido (sequencial) */
+  order_seq: number;
 }
 
 const LOCAL_KEY = 'garcom_db_v1';
@@ -125,6 +131,7 @@ function loadLocal(): LocalDb {
         orders: d.orders ?? [],
         items: d.items ?? [],
         bills: d.bills ?? [],
+        order_seq: d.order_seq ?? d.settings?.order_seq ?? 0,
       };
     } catch {
       /* banco local corrompido: começa do zero */
@@ -137,6 +144,7 @@ function loadLocal(): LocalDb {
     orders: [],
     items: [],
     bills: [],
+    order_seq: 0,
   };
 }
 
@@ -154,7 +162,10 @@ function sb(): SupabaseClient {
 }
 
 export async function getSettings(): Promise<Settings> {
-  if (!isSupabase) return loadLocal().settings;
+  if (!isSupabase) {
+    const db = loadLocal();
+    return { ...db.settings, order_seq: db.order_seq ?? 0 };
+  }
   const { data, error } = await sb()
     .from('settings')
     .select('*')
@@ -171,7 +182,33 @@ export async function getSettings(): Promise<Settings> {
   return {
     service_fee_pct: data.service_fee_pct,
     table_count: data.table_count,
+    order_seq: data.order_seq ?? 0,
   };
+}
+
+/**
+ * Próximo número do pedido ("Pedido Nº 0001", sequencial, persistente).
+ * Modo local: contador no banco local. Supabase: incremento atômico via
+ * função SQL next_order_number(); se o supabase.sql antigo ainda não
+ * tiver a função, cai no leitura-e-gravação da linha de settings.
+ */
+export async function nextOrderNumber(): Promise<number> {
+  if (!isSupabase) {
+    const db = loadLocal();
+    const n = (db.order_seq ?? 0) + 1;
+    db.order_seq = n;
+    saveLocal(db);
+    return n;
+  }
+  const { data, error } = await sb().rpc('next_order_number');
+  if (!error && typeof data === 'number') return data;
+  const s = await getSettings();
+  const n = (s.order_seq ?? 0) + 1;
+  const { error: upErr } = await sb()
+    .from('settings')
+    .upsert({ id: 1, order_seq: n });
+  if (upErr) throw upErr;
+  return n;
 }
 
 export async function saveSettings(s: Settings): Promise<void> {
@@ -267,6 +304,7 @@ export async function createProduct(input: {
   price_cents: number;
   category: string;
   prints_in: 'kitchen' | 'bar';
+  drink_type?: string;
   description?: string;
 }): Promise<Product> {
   const product: Product = {
@@ -275,6 +313,7 @@ export async function createProduct(input: {
     price_cents: input.price_cents,
     category: input.category,
     prints_in: input.prints_in,
+    drink_type: (input.drink_type as Product['drink_type']) ?? undefined,
     description: input.description ?? undefined,
     created_at: nowIso(),
   };
@@ -292,6 +331,7 @@ export async function createProduct(input: {
       price_cents: product.price_cents,
       category: product.category,
       prints_in: product.prints_in,
+      drink_type: product.drink_type ?? null,
       description: product.description ?? null,
     })
     .select()

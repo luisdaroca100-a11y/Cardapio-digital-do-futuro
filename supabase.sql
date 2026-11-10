@@ -16,6 +16,9 @@ create table if not exists public.waiters (
 -- Produtos do cardápio
 -- prints_in: 'kitchen' (prato → impressora da cozinha)
 --          ou 'bar'    (bebida → impressora do bar)
+-- drink_type: tipo da bebida (só bar) — define as opções de "Como
+--   servir": 'refrigerante' (4 jeitos de copo), 'cerveja' (precisa de
+--   copos? + quantos), 'torre' (quantas canecas?), 'outro' (sem opções).
 -- description: "o que vem no prato" (só comida) — opcional, vai na via
 -- da cozinha, embaixo do nome do prato.
 create table if not exists public.products (
@@ -25,22 +28,46 @@ create table if not exists public.products (
   category text not null default 'Geral',
   prints_in text not null default 'kitchen'
     check (prints_in in ('kitchen', 'bar')),
+  drink_type text
+    check (drink_type in ('refrigerante', 'cerveja', 'torre', 'outro')),
   description text,
   created_at timestamptz not null default now()
 );
 
--- Para bancos criados com a versão anterior do schema (sem a coluna):
+-- Para bancos criados com a versão anterior do schema (sem as colunas):
+alter table public.products
+  add column if not exists drink_type text
+    check (drink_type in ('refrigerante', 'cerveja', 'torre', 'outro'));
 alter table public.products
   add column if not exists description text;
 
 -- Configurações (uma única linha, id = 1)
+-- order_seq: contador do número do pedido ("Pedido Nº 0001"), sequencial.
 create table if not exists public.settings (
   id integer primary key,
   service_fee_pct numeric not null default 3
     check (service_fee_pct >= 0 and service_fee_pct <= 100),
   table_count integer not null default 12
-    check (table_count >= 1 and table_count <= 100)
+    check (table_count >= 1 and table_count <= 100),
+  order_seq integer not null default 0
 );
+
+-- Para bancos criados com a versão anterior do schema (sem a coluna):
+alter table public.settings
+  add column if not exists order_seq integer not null default 0;
+
+-- Próximo número do pedido — incremento atômico (dois garçons
+-- enviando ao mesmo tempo não pegam o mesmo número).
+create or replace function public.next_order_number()
+returns integer
+language sql
+as $$
+  insert into public.settings (id, order_seq)
+  values (1, 1)
+  on conflict (id) do update
+    set order_seq = public.settings.order_seq + 1
+  returning order_seq;
+$$;
 
 -- Pedidos (um por mesa aberta)
 create table if not exists public.orders (

@@ -12,6 +12,7 @@ import {
 } from '@/lib/store';
 import type {
   ClosedBill,
+  DrinkType,
   OrderItem,
   OrderWithItems,
   Product,
@@ -68,6 +69,10 @@ interface TicketData {
   kitchen: OrderItem[];
   bar: OrderItem[];
   bill: ClosedBill | null;
+  /** número sequencial do envio ("Pedido Nº 0001") — só kind 'send' */
+  orderNumber?: number;
+  /** hora do envio — só kind 'send' */
+  sentAt?: string;
 }
 
 /**
@@ -113,6 +118,9 @@ class ErrorBoundary extends Component<
   }
 }
 
+/** Nome do restaurante no cabeçalho das vias da cozinha e do bar. */
+const RESTAURANT_NAME = 'Gosto Caseiro';
+
 /** Opções de como servir a bebida (escolha única, só pro bar). */
 const SERVE_OPTIONS = [
   'copo com limão e gelo',
@@ -133,6 +141,10 @@ function GarcomApp() {
   const [session, setSession] = useState<Session | null>(null);
   const [currentOrder, setCurrentOrder] = useState<OrderWithItems | null>(null);
   const [serveProduct, setServeProduct] = useState<Product | null>(null);
+  /** cerveja: null = ainda não perguntou se precisa de copos; true = sim, pede a quantidade */
+  const [beerCups, setBeerCups] = useState<boolean | null>(null);
+  /** quantidade (copos p/ cerveja, canecas p/ torre) */
+  const [serveQty, setServeQty] = useState(1);
   const [orderCategory, setOrderCategory] = useState<string | null>(null);
   const [orderSearch, setOrderSearch] = useState('');
   const [tickets, setTickets] = useState<TicketData | null>(null);
@@ -277,22 +289,55 @@ function GarcomApp() {
     setView('tables');
   }
 
-  /** Tocar num produto: bebida abre a escolha de como servir; comida vai direto. */
+  /** Tocar num produto: bebida abre a escolha de como servir (conforme
+   * o tipo dela); comida e "outro sem opções" vão direto. */
   function onProductTap(product: Product) {
-    if (product.prints_in === 'bar') {
+    if (
+      product.prints_in === 'bar' &&
+      (product.drink_type ?? 'refrigerante') !== 'outro'
+    ) {
       setServeProduct(product);
+      setBeerCups(null);
+      setServeQty(1);
       setView('serve');
       return;
     }
     void addProduct(product);
   }
 
-  /** Escolheu como servir: o item entra no pedido com a opção e vai pro resumo. */
+  /** Escolheu como servir (refrigerante): o item entra no pedido com a opção e vai pro resumo. */
   async function chooseServe(option: string) {
     const product = serveProduct;
     setServeProduct(null);
+    setBeerCups(null);
     if (!product) return;
     await addProduct(product, option);
+  }
+
+  /** Cerveja — "Precisa de copos?": Não → entra sem copos; Sim → pede a quantidade. */
+  async function chooseBeerCups(needsCups: boolean) {
+    const product = serveProduct;
+    if (!product) return;
+    if (!needsCups) {
+      setServeProduct(null);
+      setBeerCups(null);
+      await addProduct(product, 'sem copos');
+      return;
+    }
+    setBeerCups(true);
+  }
+
+  /** Cerveja (com copos) ou torre: confirma a quantidade e adiciona. */
+  async function confirmServeQty() {
+    const product = serveProduct;
+    if (!product) return;
+    const drinkType = product.drink_type ?? 'refrigerante';
+    const unit = drinkType === 'torre' ? 'caneca' : 'copo';
+    const label =
+      serveQty === 1 ? `1 ${unit}` : `${serveQty} ${unit}s`;
+    setServeProduct(null);
+    setBeerCups(null);
+    await addProduct(product, label);
   }
 
   async function addProduct(product: Product, serve?: string) {
@@ -380,6 +425,8 @@ function GarcomApp() {
     if (pending.length === 0) return;
     setBusy(true);
     try {
+      const orderNumber = await store.nextOrderNumber();
+      const sentAt = new Date().toISOString();
       await store.sendOrder(currentOrder.order.id);
       const { kitchen, bar } = splitTickets(pending);
       setTickets({
@@ -388,6 +435,8 @@ function GarcomApp() {
         kitchen,
         bar,
         bill: null,
+        orderNumber,
+        sentAt,
       });
       await refreshCurrentOrder(currentOrder.order.id);
     } catch (e) {
@@ -709,6 +758,7 @@ function GarcomApp() {
   /* ------------------------------ COMO SERVIR ------------------------------ */
 
   if (view === 'serve' && serveProduct && currentOrder) {
+    const drinkType = serveProduct.drink_type ?? 'refrigerante';
     return (
       <div className="app">
         <header className="header">
@@ -722,6 +772,7 @@ function GarcomApp() {
             className="icon-btn"
             onClick={() => {
               setServeProduct(null);
+              setBeerCups(null);
               setView('order');
             }}
           >
@@ -729,17 +780,65 @@ function GarcomApp() {
           </button>
         </header>
         <div className="content">
-          <div className="cat-grid">
-            {SERVE_OPTIONS.map((opt) => (
+          {drinkType === 'cerveja' && beerCups === null ? (
+            <>
+              <p className="serve-q">Precisa de copos?</p>
+              <div className="cat-grid">
+                <button
+                  className="cat-tile"
+                  onClick={() => void chooseBeerCups(true)}
+                >
+                  Sim
+                </button>
+                <button
+                  className="cat-tile"
+                  onClick={() => void chooseBeerCups(false)}
+                >
+                  Não
+                </button>
+              </div>
+            </>
+          ) : drinkType === 'cerveja' || drinkType === 'torre' ? (
+            <>
+              <p className="serve-q">
+                {drinkType === 'torre' ? 'Quantas canecas?' : 'Quantos copos?'}
+              </p>
+              <div className="serve-qty">
+                <button
+                  aria-label="Diminuir"
+                  onClick={() => setServeQty((q) => Math.max(1, q - 1))}
+                >
+                  −
+                </button>
+                <span>{serveQty}</span>
+                <button
+                  aria-label="Aumentar"
+                  onClick={() => setServeQty((q) => Math.min(20, q + 1))}
+                >
+                  +
+                </button>
+              </div>
               <button
-                key={opt}
-                className="cat-tile"
-                onClick={() => void chooseServe(opt)}
+                className="btn btn-green"
+                style={{ width: '100%', marginTop: 16 }}
+                onClick={() => void confirmServeQty()}
               >
-                {opt}
+                Adicionar
               </button>
-            ))}
-          </div>
+            </>
+          ) : (
+            <div className="cat-grid">
+              {SERVE_OPTIONS.map((opt) => (
+                <button
+                  key={opt}
+                  className="cat-tile"
+                  onClick={() => void chooseServe(opt)}
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1195,6 +1294,7 @@ function ProductForm({
   const [price, setPrice] = useState('');
   const [category, setCategory] = useState('');
   const [printsIn, setPrintsIn] = useState<'kitchen' | 'bar'>('kitchen');
+  const [drinkType, setDrinkType] = useState<DrinkType>('refrigerante');
   const [description, setDescription] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1225,6 +1325,7 @@ function ProductForm({
         price_cents: cents,
         category: category.trim(),
         prints_in: printsIn,
+        drink_type: printsIn === 'bar' ? drinkType : undefined,
         description:
           printsIn === 'kitchen' && description.trim()
             ? description.trim()
@@ -1233,6 +1334,7 @@ function ProductForm({
       setName('');
       setPrice('');
       setCategory('');
+      setDrinkType('refrigerante');
       setDescription('');
       await onAdded();
     } catch (e) {
@@ -1305,6 +1407,22 @@ function ProductForm({
           </button>
         </div>
       </div>
+      {printsIn === 'bar' && (
+        <div className="field">
+          <label htmlFor="prod-drink">Tipo de bebida</label>
+          <select
+            id="prod-drink"
+            value={drinkType}
+            disabled={disabled}
+            onChange={(e) => setDrinkType(e.target.value as DrinkType)}
+          >
+            <option value="refrigerante">Refrigerante</option>
+            <option value="cerveja">Cerveja</option>
+            <option value="torre">Torre de chopp</option>
+            <option value="outro">Outro sem opções</option>
+          </select>
+        </div>
+      )}
       {printsIn === 'kitchen' && (
         <div className="field">
           <label htmlFor="prod-desc">O que vem no prato (opcional)</label>
@@ -1511,42 +1629,98 @@ function TicketsModal({
 
         {data.kitchen.length > 0 && (
           <div className="ticket">
-            <h3>COZINHA</h3>
-            <div className="t-sub">MESA {data.tableNumber}</div>
+            <div className="t-head">
+              <span className="t-logo" aria-hidden>
+                👨‍🍳
+              </span>
+              <span className="t-name">{RESTAURANT_NAME}</span>
+              <span className="t-num">
+                Pedido Nº
+                <strong>
+                  {String(data.orderNumber ?? 0).padStart(4, '0')}
+                </strong>
+              </span>
+            </div>
+            <div className="t-meta">
+              Mesa: {data.tableNumber} | Hora:{' '}
+              {data.sentAt ? formatTime(data.sentAt) : ''}
+            </div>
+            <div className="t-band">👨‍🍳&nbsp; COZINHA</div>
+            <div className="t-cols">
+              <span className="t-qty">Qtd.</span>
+              <span>Produto</span>
+            </div>
+            <hr />
             {data.kitchen.map((i) => {
               const desc = products.find(
                 (p) => p.id === i.product_id,
               )?.description;
               return (
                 <div key={i.id}>
-                  <div className="t-line">
-                    <span>
-                      {i.qty}× {i.product_name}
-                    </span>
+                  <div className="t-row">
+                    <span className="t-qty">{i.qty}×</span>
+                    <span>{i.product_name}</span>
                   </div>
-                  {desc && <div className="t-note">{desc}</div>}
-                  {i.note && <div className="t-note">Obs.: {i.note}</div>}
+                  {desc && <div className="t-detail">{desc}</div>}
+                  {i.note && (
+                    <div className="t-obs">
+                      <strong>Observações:</strong> {i.note}
+                    </div>
+                  )}
                 </div>
               );
             })}
+            <hr />
+            <div className="t-foot">
+              ✓ Pedido em preparo!
+              <span>Qualquer dúvida, chame o garçom.</span>
+            </div>
           </div>
         )}
 
         {data.bar.length > 0 && (
           <div className="ticket">
-            <h3>BAR</h3>
-            <div className="t-sub">MESA {data.tableNumber}</div>
+            <div className="t-head">
+              <span className="t-logo" aria-hidden>
+                👨‍🍳
+              </span>
+              <span className="t-name">{RESTAURANT_NAME}</span>
+              <span className="t-num">
+                Pedido Nº
+                <strong>
+                  {String(data.orderNumber ?? 0).padStart(4, '0')}
+                </strong>
+              </span>
+            </div>
+            <div className="t-meta">
+              Mesa: {data.tableNumber} | Hora:{' '}
+              {data.sentAt ? formatTime(data.sentAt) : ''}
+            </div>
+            <div className="t-band">🥤&nbsp; BAR</div>
+            <div className="t-cols">
+              <span className="t-qty">Qtd.</span>
+              <span>Produto</span>
+            </div>
+            <hr />
             {data.bar.map((i) => (
               <div key={i.id}>
-                <div className="t-line">
-                  <span>
-                    {i.qty}× {i.product_name}
-                  </span>
+                <div className="t-row">
+                  <span className="t-qty">{i.qty}×</span>
+                  <span>{i.product_name}</span>
                 </div>
-                {i.serve && <div className="t-note">{i.serve}</div>}
-                {i.note && <div className="t-note">Obs.: {i.note}</div>}
+                {i.serve && <div className="t-detail">{i.serve}</div>}
+                {i.note && (
+                  <div className="t-obs">
+                    <strong>Observações:</strong> {i.note}
+                  </div>
+                )}
               </div>
             ))}
+            <hr />
+            <div className="t-foot">
+              ✓ Pedido em preparo!
+              <span>Qualquer dúvida, chame o garçom.</span>
+            </div>
           </div>
         )}
 
