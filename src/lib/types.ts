@@ -15,6 +15,8 @@ export interface Product {
   price_cents: number;
   category: string;
   prints_in: PrintsIn;
+  /** O que vem no prato (só comida) — opcional, vai na via da cozinha. */
+  description?: string | null;
   created_at: string;
 }
 
@@ -34,6 +36,8 @@ export interface OrderItem {
   price_cents: number;
   qty: number;
   note: string;
+  /** Como servir a bebida (só bar) — ex.: "copo com limão e gelo". */
+  serve?: string | null;
   /** false = ainda no resumo; true = já enviado p/ cozinha/bar */
   sent: boolean;
   created_at: string;

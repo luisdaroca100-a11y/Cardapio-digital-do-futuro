@@ -267,6 +267,7 @@ export async function createProduct(input: {
   price_cents: number;
   category: string;
   prints_in: 'kitchen' | 'bar';
+  description?: string;
 }): Promise<Product> {
   const product: Product = {
     id: newId(),
@@ -274,6 +275,7 @@ export async function createProduct(input: {
     price_cents: input.price_cents,
     category: input.category,
     prints_in: input.prints_in,
+    description: input.description ?? undefined,
     created_at: nowIso(),
   };
   if (!isSupabase) {
@@ -290,6 +292,7 @@ export async function createProduct(input: {
       price_cents: product.price_cents,
       category: product.category,
       prints_in: product.prints_in,
+      description: product.description ?? null,
     })
     .select()
     .single();
@@ -404,15 +407,21 @@ export async function createOrder(
   return data as Order;
 }
 
-/** Adiciona 1 unidade do produto ao pedido (soma na linha se já existir uma não enviada). */
+/** Adiciona 1 unidade do produto ao pedido (soma na linha se já existir uma não enviada com o mesmo modo de servir). */
 export async function addItem(
   orderId: string,
   product: Product,
+  opts?: { serve?: string },
 ): Promise<OrderItem> {
+  const serve = opts?.serve ?? null;
   if (!isSupabase) {
     const db = loadLocal();
     const existing = db.items.find(
-      (i) => i.order_id === orderId && i.product_id === product.id && !i.sent,
+      (i) =>
+        i.order_id === orderId &&
+        i.product_id === product.id &&
+        !i.sent &&
+        (i.serve ?? null) === serve,
     );
     if (existing) {
       existing.qty += 1;
@@ -427,6 +436,7 @@ export async function addItem(
       price_cents: product.price_cents,
       qty: 1,
       note: '',
+      serve: serve ?? undefined,
       sent: false,
       created_at: nowIso(),
     };
@@ -434,18 +444,20 @@ export async function addItem(
     saveLocal(db);
     return item;
   }
-  const { data: existing } = await sb()
+  const { data: lines } = await sb()
     .from('order_items')
     .select('*')
     .eq('order_id', orderId)
     .eq('product_id', product.id)
-    .eq('sent', false)
-    .maybeSingle();
+    .eq('sent', false);
+  const existing = (lines ?? []).find(
+    (i) => ((i as OrderItem).serve ?? null) === serve,
+  ) as OrderItem | undefined;
   if (existing) {
     const { data, error } = await sb()
       .from('order_items')
-      .update({ qty: (existing as OrderItem).qty + 1 })
-      .eq('id', (existing as OrderItem).id)
+      .update({ qty: existing.qty + 1 })
+      .eq('id', existing.id)
       .select()
       .single();
     if (error) throw error;
@@ -461,6 +473,7 @@ export async function addItem(
       price_cents: product.price_cents,
       qty: 1,
       note: '',
+      serve,
       sent: false,
     })
     .select()
@@ -495,6 +508,39 @@ export async function removeItem(id: string): Promise<void> {
   }
   const { error } = await sb().from('order_items').delete().eq('id', id);
   if (error) throw error;
+}
+
+/**
+ * Remove pedidos abertos sem nenhum item (restos da regra antiga, que
+ * travava a mesa só de abrir). Uma mesa sem pedido volta a ficar livre.
+ * Retorna quantos pedidos foram removidos.
+ */
+export async function cleanupEmptyOrders(): Promise<number> {
+  if (!isSupabase) {
+    const db = loadLocal();
+    const emptyIds = new Set(
+      db.orders
+        .filter((o) => o.status === 'open')
+        .filter((o) => !db.items.some((i) => i.order_id === o.id))
+        .map((o) => o.id),
+    );
+    if (emptyIds.size === 0) return 0;
+    db.orders = db.orders.filter((o) => !emptyIds.has(o.id));
+    saveLocal(db);
+    return emptyIds.size;
+  }
+  const open = await listOpenOrders();
+  const empty = open.filter((ow) => ow.items.length === 0);
+  if (empty.length === 0) return 0;
+  const { error } = await sb()
+    .from('orders')
+    .delete()
+    .in(
+      'id',
+      empty.map((ow) => ow.order.id),
+    );
+  if (error) throw error;
+  return empty.length;
 }
 
 /** Marca os itens ainda não enviados como enviados (vão p/ cozinha/bar). */

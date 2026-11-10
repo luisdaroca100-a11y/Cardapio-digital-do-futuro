@@ -19,7 +19,16 @@ import type {
   Waiter,
 } from '@/lib/types';
 
-type View = 'setup' | 'login' | 'tables' | 'order' | 'summary' | 'settings' | 'closed' | 'menu';
+type View =
+  | 'setup'
+  | 'login'
+  | 'tables'
+  | 'order'
+  | 'serve'
+  | 'summary'
+  | 'settings'
+  | 'closed'
+  | 'menu';
 
 function brl(cents: number): string {
   return (cents / 100).toLocaleString('pt-BR', {
@@ -104,6 +113,14 @@ class ErrorBoundary extends Component<
   }
 }
 
+/** Opções de como servir a bebida (escolha única, só pro bar). */
+const SERVE_OPTIONS = [
+  'copo com limão e gelo',
+  'copo com só limão',
+  'copo com gelo',
+  'só copo',
+];
+
 function GarcomApp() {
   const [view, setView] = useState<View>('login');
   const [booting, setBooting] = useState(true);
@@ -115,6 +132,7 @@ function GarcomApp() {
   const [openOrders, setOpenOrders] = useState<OrderWithItems[]>([]);
   const [session, setSession] = useState<Session | null>(null);
   const [currentOrder, setCurrentOrder] = useState<OrderWithItems | null>(null);
+  const [serveProduct, setServeProduct] = useState<Product | null>(null);
   const [orderCategory, setOrderCategory] = useState<string | null>(null);
   const [orderSearch, setOrderSearch] = useState('');
   const [tickets, setTickets] = useState<TicketData | null>(null);
@@ -150,6 +168,10 @@ function GarcomApp() {
     (async () => {
       try {
         const [waiters] = await Promise.all([store.listWaiters(), refresh()]);
+        // Mesas abertas sem nenhum item (restos da regra antiga) voltam
+        // a ficar livres.
+        await store.cleanupEmptyOrders();
+        await refresh();
         if (waiters.length === 0) {
           setView('setup');
           return;
@@ -205,11 +227,12 @@ function GarcomApp() {
   function handleLogout() {
     setSession(null);
     setCurrentOrder(null);
+    setServeProduct(null);
     safeRemove(SESSION_KEY);
     setView('login');
   }
 
-  async function openTable(tableNumber: number) {
+  function openTable(tableNumber: number) {
     if (!session) return;
     setError('');
     const existing = openOrders.find(
@@ -228,35 +251,90 @@ function GarcomApp() {
       setView(existing.items.length === 0 ? 'order' : 'summary');
       return;
     }
-    setBusy(true);
-    try {
-      const waiter: Waiter = {
-        id: session.id,
-        name: session.name,
-        login: session.login,
-        password_hash: '',
-        created_at: '',
-      };
-      const order = await store.createOrder(tableNumber, waiter);
-      const ow: OrderWithItems = { order, items: [] };
-      setCurrentOrder(ow);
-      setOpenOrders((prev) => [...prev, ow]);
-      setOrderCategory(null);
-      setOrderSearch('');
-      setView('order');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Não foi possível abrir a mesa.');
-    } finally {
-      setBusy(false);
-    }
+    // Rascunho só em memória: a mesa só trava quando o primeiro item for
+    // adicionado. Sair sem pedir não grava nada — a mesa continua livre.
+    // (id vazio = rascunho ainda não persistido; ver addProduct.)
+    setCurrentOrder({
+      order: {
+        id: '',
+        table_number: tableNumber,
+        waiter_id: session.id,
+        waiter_name: session.name,
+        status: 'open',
+        created_at: new Date().toISOString(),
+        closed_at: null,
+      },
+      items: [],
+    });
+    setOrderCategory(null);
+    setOrderSearch('');
+    setView('order');
   }
 
-  async function addProduct(product: Product) {
-    if (!currentOrder) return;
+  /** Volta às mesas descartando o rascunho (mesa aberta sem nenhum item). */
+  function backToTablesFromOrder() {
+    if (currentOrder && currentOrder.order.id === '') setCurrentOrder(null);
+    setView('tables');
+  }
+
+  /** Tocar num produto: bebida abre a escolha de como servir; comida vai direto. */
+  function onProductTap(product: Product) {
+    if (product.prints_in === 'bar') {
+      setServeProduct(product);
+      setView('serve');
+      return;
+    }
+    void addProduct(product);
+  }
+
+  /** Escolheu como servir: o item entra no pedido com a opção e vai pro resumo. */
+  async function chooseServe(option: string) {
+    const product = serveProduct;
+    setServeProduct(null);
+    if (!product) return;
+    await addProduct(product, option);
+  }
+
+  async function addProduct(product: Product, serve?: string) {
+    if (!currentOrder || !session) return;
     setBusy(true);
     try {
-      await store.addItem(currentOrder.order.id, product);
-      const ow = await refreshCurrentOrder(currentOrder.order.id);
+      let orderId = currentOrder.order.id;
+      if (!orderId) {
+        // Primeiro item do rascunho: grava o pedido e trava a mesa.
+        // Confere antes se outro garçom não travou a mesa nesse meio-tempo.
+        const open = await store.listOpenOrders();
+        const taken = open.find(
+          (o) => o.order.table_number === currentOrder.order.table_number,
+        );
+        if (taken) {
+          if (taken.order.waiter_id !== session.id) {
+            setError(
+              `A Mesa ${currentOrder.order.table_number} foi aberta por ${taken.order.waiter_name}. Só ele pode abrir.`,
+            );
+            setCurrentOrder(null);
+            setOpenOrders(open);
+            setView('tables');
+            return;
+          }
+          orderId = taken.order.id;
+        } else {
+          const waiter: Waiter = {
+            id: session.id,
+            name: session.name,
+            login: session.login,
+            password_hash: '',
+            created_at: '',
+          };
+          const order = await store.createOrder(
+            currentOrder.order.table_number,
+            waiter,
+          );
+          orderId = order.id;
+        }
+      }
+      await store.addItem(orderId, product, serve ? { serve } : undefined);
+      const ow = await refreshCurrentOrder(orderId);
       if (ow) setView('summary');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível adicionar.');
@@ -519,7 +597,7 @@ function GarcomApp() {
             <h1>Novo Pedido - Mesa {tableNumber}</h1>
             <div className="sub">{session.name}</div>
           </div>
-          <button className="icon-btn" onClick={() => setView('tables')}>
+          <button className="icon-btn" onClick={backToTablesFromOrder}>
             ✕ Mesas
           </button>
         </header>
@@ -548,7 +626,7 @@ function GarcomApp() {
                         pendingItems.find((i) => i.product_id === p.id)?.qty ??
                         0
                       }
-                      onAdd={() => addProduct(p)}
+                      onAdd={() => onProductTap(p)}
                     />
                   ))}
                 </div>
@@ -571,7 +649,7 @@ function GarcomApp() {
                         pendingItems.find((i) => i.product_id === p.id)?.qty ??
                         0
                       }
-                      onAdd={() => addProduct(p)}
+                      onAdd={() => onProductTap(p)}
                     />
                   ))}
                 </div>
@@ -610,7 +688,7 @@ function GarcomApp() {
               } else if (currentOrder.items.length > 0) {
                 setView('summary');
               } else {
-                setView('tables');
+                backToTablesFromOrder();
               }
             }}
           >
@@ -623,6 +701,45 @@ function GarcomApp() {
           >
             REVISAR ({pendingCount}) · {brl(pendingTotal)}
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  /* ------------------------------ COMO SERVIR ------------------------------ */
+
+  if (view === 'serve' && serveProduct && currentOrder) {
+    return (
+      <div className="app">
+        <header className="header">
+          <div>
+            <h1>Como servir</h1>
+            <div className="sub">
+              {serveProduct.name} · Mesa {currentOrder.order.table_number}
+            </div>
+          </div>
+          <button
+            className="icon-btn"
+            onClick={() => {
+              setServeProduct(null);
+              setView('order');
+            }}
+          >
+            ✕ Voltar
+          </button>
+        </header>
+        <div className="content">
+          <div className="cat-grid">
+            {SERVE_OPTIONS.map((opt) => (
+              <button
+                key={opt}
+                className="cat-tile"
+                onClick={() => void chooseServe(opt)}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -742,6 +859,7 @@ function GarcomApp() {
         {tickets && (
           <TicketsModal
             data={tickets}
+            products={products}
             onClose={() => {
               setTickets(null);
               setView('tables');
@@ -1077,6 +1195,7 @@ function ProductForm({
   const [price, setPrice] = useState('');
   const [category, setCategory] = useState('');
   const [printsIn, setPrintsIn] = useState<'kitchen' | 'bar'>('kitchen');
+  const [description, setDescription] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -1106,10 +1225,15 @@ function ProductForm({
         price_cents: cents,
         category: category.trim(),
         prints_in: printsIn,
+        description:
+          printsIn === 'kitchen' && description.trim()
+            ? description.trim()
+            : undefined,
       });
       setName('');
       setPrice('');
       setCategory('');
+      setDescription('');
       await onAdded();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível adicionar.');
@@ -1181,6 +1305,18 @@ function ProductForm({
           </button>
         </div>
       </div>
+      {printsIn === 'kitchen' && (
+        <div className="field">
+          <label htmlFor="prod-desc">O que vem no prato (opcional)</label>
+          <input
+            id="prod-desc"
+            value={description}
+            disabled={disabled}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Ex.: arroz, feijão, batata frita"
+          />
+        </div>
+      )}
       <button
         className="btn btn-orange"
         disabled={busy || disabled}
@@ -1285,6 +1421,7 @@ function ItemRow({
         <span className="iname">{item.product_name}</span>
         <span className="iline">{brl(item.price_cents * item.qty)}</span>
       </div>
+      {item.serve && <div className="note-line">{item.serve}</div>}
       <input
         className="note-input"
         value={draft}
@@ -1348,9 +1485,11 @@ function ConfirmModal({
 
 function TicketsModal({
   data,
+  products,
   onClose,
 }: {
   data: TicketData;
+  products: Product[];
   onClose: () => void;
 }) {
   return (
@@ -1374,18 +1513,22 @@ function TicketsModal({
           <div className="ticket">
             <h3>COZINHA</h3>
             <div className="t-sub">MESA {data.tableNumber}</div>
-            {data.kitchen.map((i) => (
-              <div key={i.id}>
-                <div className="t-line">
-                  <span>
-                    {i.qty}× {i.product_name}
-                  </span>
+            {data.kitchen.map((i) => {
+              const desc = products.find(
+                (p) => p.id === i.product_id,
+              )?.description;
+              return (
+                <div key={i.id}>
+                  <div className="t-line">
+                    <span>
+                      {i.qty}× {i.product_name}
+                    </span>
+                  </div>
+                  {desc && <div className="t-note">{desc}</div>}
+                  {i.note && <div className="t-note">Obs.: {i.note}</div>}
                 </div>
-                {i.note && <div className="t-note">Obs.: {i.note}</div>}
-              </div>
-            ))}
-            <hr />
-            <div className="t-sub">Sem valores — para o cumim entregar</div>
+              );
+            })}
           </div>
         )}
 
@@ -1400,11 +1543,10 @@ function TicketsModal({
                     {i.qty}× {i.product_name}
                   </span>
                 </div>
+                {i.serve && <div className="t-note">{i.serve}</div>}
                 {i.note && <div className="t-note">Obs.: {i.note}</div>}
               </div>
             ))}
-            <hr />
-            <div className="t-sub">Sem valores</div>
           </div>
         )}
 

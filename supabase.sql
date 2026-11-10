@@ -16,6 +16,8 @@ create table if not exists public.waiters (
 -- Produtos do cardápio
 -- prints_in: 'kitchen' (prato → impressora da cozinha)
 --          ou 'bar'    (bebida → impressora do bar)
+-- description: "o que vem no prato" (só comida) — opcional, vai na via
+-- da cozinha, embaixo do nome do prato.
 create table if not exists public.products (
   id uuid primary key,
   name text not null,
@@ -23,8 +25,13 @@ create table if not exists public.products (
   category text not null default 'Geral',
   prints_in text not null default 'kitchen'
     check (prints_in in ('kitchen', 'bar')),
+  description text,
   created_at timestamptz not null default now()
 );
+
+-- Para bancos criados com a versão anterior do schema (sem a coluna):
+alter table public.products
+  add column if not exists description text;
 
 -- Configurações (uma única linha, id = 1)
 create table if not exists public.settings (
@@ -49,6 +56,7 @@ create table if not exists public.orders (
 
 -- Itens do pedido
 -- sent = false → ainda no resumo; true → já enviado p/ cozinha/bar
+-- serve: como servir a bebida (só bar) — ex.: "copo com limão e gelo"
 create table if not exists public.order_items (
   id uuid primary key,
   order_id uuid not null references public.orders (id) on delete cascade,
@@ -57,9 +65,14 @@ create table if not exists public.order_items (
   price_cents integer not null check (price_cents > 0),
   qty integer not null default 1 check (qty > 0),
   note text not null default '',
+  serve text,
   sent boolean not null default false,
   created_at timestamptz not null default now()
 );
+
+-- Para bancos criados com a versão anterior do schema (sem a coluna):
+alter table public.order_items
+  add column if not exists serve text;
 
 -- Contas fechadas — é daqui que o futuro sistema financeiro
 -- do dono vai ler as vendas por garçom (valor, taxa, garçom).
