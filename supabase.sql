@@ -238,6 +238,48 @@ alter table public.closed_bills
   add column if not exists commission_pct numeric not null default 0;
 
 -- ------------------------------------------------------------
+-- Impressoras térmicas — impressão automática (cozinha, bar, balcão)
+-- ------------------------------------------------------------
+-- printers (JSON na linha de configurações): as impressoras de cada
+-- setor, cadastradas pelo dono sozinho em Ajustes (nome, ligação e
+-- ponte: computador do balcão ou celular na central de impressão).
+alter table public.settings
+  add column if not exists printers jsonb not null default '[]'::jsonb;
+
+-- print_jobs: a fila de vias pra impressão automática. O garçom envia
+-- o pedido (via da cozinha e/ou do bar) ou fecha a mesa (conta do
+-- balcão) e a via entra aqui como 'pending'; a central de impressão
+-- (computador do balcão ou celular velho) consome a fila e marca
+-- 'printed' — via que não saiu fica pendente até imprimir, nada some
+-- sem o dono ver. items e bill são fotografados na hora (a central
+-- não precisa buscar o pedido de novo).
+create table if not exists public.print_jobs (
+  id uuid primary key,
+  restaurant_id uuid references public.restaurants (id),
+  sector text not null check (sector in ('kitchen', 'bar', 'counter')),
+  kind text not null check (kind in ('send', 'close')),
+  order_number integer not null,
+  table_number integer not null,
+  waiter_name text not null,
+  items jsonb not null default '[]'::jsonb,
+  bill jsonb,
+  status text not null default 'pending'
+    check (status in ('pending', 'printed', 'failed')),
+  printed_via text check (printed_via in ('computer', 'phone', 'simulation')),
+  created_at timestamptz not null default now(),
+  printed_at timestamptz
+);
+
+-- A central de impressão é avisada na hora que uma via nova entra na
+-- fila (Supabase Realtime).
+do $$
+begin
+  alter publication supabase_realtime add table public.print_jobs;
+exception when duplicate_object then
+  null;
+end $$;
+
+-- ------------------------------------------------------------
 -- Migração do restaurante que já existe (Gosto Caseiro):
 -- o dono, os garçons, o cardápio, os pedidos e as vendas que já
 -- estão no banco viram o primeiro restaurante da plataforma, SEM
@@ -305,6 +347,7 @@ alter table public.settings enable row level security;
 alter table public.orders enable row level security;
 alter table public.order_items enable row level security;
 alter table public.closed_bills enable row level security;
+alter table public.print_jobs enable row level security;
 
 drop policy if exists "garcom_all_restaurants" on public.restaurants;
 create policy "garcom_all_restaurants" on public.restaurants
@@ -332,4 +375,7 @@ create policy "garcom_all_order_items" on public.order_items
   for all using (true) with check (true);
 drop policy if exists "garcom_all_closed_bills" on public.closed_bills;
 create policy "garcom_all_closed_bills" on public.closed_bills
+  for all using (true) with check (true);
+drop policy if exists "garcom_all_print_jobs" on public.print_jobs;
+create policy "garcom_all_print_jobs" on public.print_jobs
   for all using (true) with check (true);

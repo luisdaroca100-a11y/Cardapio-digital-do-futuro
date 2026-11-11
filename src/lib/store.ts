@@ -7,6 +7,10 @@ import type {
   Owner,
   PlatformAdmin,
   PlanId,
+  PrinterConfig,
+  PrintJob,
+  PrintJobStatus,
+  PrintJobVia,
   Product,
   Restaurant,
   Settings,
@@ -115,6 +119,7 @@ export const DEFAULT_SETTINGS: Settings = {
   order_seq: 0,
   default_commission_pct: DEFAULT_COMMISSION_PCT,
   day_closed_date: null,
+  printers: [],
 };
 
 /* ------------------------------------------------------------------ */
@@ -224,6 +229,8 @@ interface LocalDb {
   orders: Order[];
   items: OrderItem[];
   bills: ClosedBill[];
+  /** fila de vias pra impressão automática (cozinha, bar, balcão) */
+  printJobs: PrintJob[];
   /** administrador da plataforma — um só, separado dos donos */
   platformAdmins: PlatformAdmin[];
 }
@@ -240,6 +247,7 @@ function emptyLocalDb(): LocalDb {
     orders: [],
     items: [],
     bills: [],
+    printJobs: [],
     platformAdmins: [],
   };
 }
@@ -272,6 +280,7 @@ function loadLocal(): LocalDb {
         commission_cents: b.commission_cents ?? 0,
         commission_pct: b.commission_pct ?? 0,
       })),
+      printJobs: d.printJobs ?? [],
       platformAdmins: d.platformAdmins ?? [],
     };
     // Migração de bancos locais antigos (de antes do multi-restaurante):
@@ -666,6 +675,7 @@ export async function getSettings(): Promise<Settings> {
     default_commission_pct:
       data.default_commission_pct ?? DEFAULT_COMMISSION_PCT,
     day_closed_date: data.day_closed_date ?? null,
+    printers: (data.printers ?? []) as PrinterConfig[],
     restaurant_id: rid,
   };
 }
@@ -728,6 +738,208 @@ export async function saveSettings(s: Settings): Promise<void> {
     .from('settings')
     .upsert({ restaurant_id: rid, ...merged }, { onConflict: 'restaurant_id' });
   if (error) throw error;
+}
+
+/* ------------------------------------------------------------------ */
+/* Impressoras térmicas — configuração do dono + fila de impressão     */
+/* ------------------------------------------------------------------ */
+
+/** Impressoras cadastradas pelo dono (uma por setor, no máximo). */
+export async function getPrinterConfig(): Promise<PrinterConfig[]> {
+  const s = await getSettings();
+  return s.printers ?? [];
+}
+
+/** Salva as impressoras do restaurante (por cima das configurações). */
+export async function savePrinterConfig(
+  printers: PrinterConfig[],
+): Promise<void> {
+  const current = await getSettings();
+  await saveSettings({ ...current, printers });
+}
+
+/** Enfileira vias pra impressão automática (cozinha, bar e/ou balcão).
+ * A central de impressão consome a fila; a via só sai dela quando
+ * impressa — nada se perde se a impressora estiver desligada. */
+export async function enqueuePrintJobs(
+  jobs: Array<
+    Omit<PrintJob, 'id' | 'status' | 'created_at' | 'printed_at'>
+  >,
+): Promise<PrintJob[]> {
+  const rid = requireRestaurantId();
+  const now = nowIso();
+  const full: PrintJob[] = jobs.map((j) => ({
+    ...j,
+    id: newId(),
+    restaurant_id: rid,
+    status: 'pending',
+    printed_via: null,
+    created_at: now,
+    printed_at: null,
+  }));
+  if (!isSupabase) {
+    const db = loadLocal();
+    db.printJobs.push(...full);
+    saveLocal(db);
+    return full;
+  }
+  const { data, error } = await sb()
+    .from('print_jobs')
+    .insert(
+      full.map((j) => ({
+        id: j.id,
+        restaurant_id: j.restaurant_id,
+        sector: j.sector,
+        kind: j.kind,
+        order_number: j.order_number,
+        table_number: j.table_number,
+        waiter_name: j.waiter_name,
+        items: j.items,
+        bill: j.bill ?? null,
+        status: j.status,
+        printed_via: j.printed_via,
+        created_at: j.created_at,
+        printed_at: j.printed_at,
+      })),
+    )
+    .select();
+  if (error) throw error;
+  return (data ?? []) as PrintJob[];
+}
+
+/** Vias da fila — sem filtro, as pendentes primeiro (ordem de chegada). */
+export async function listPrintJobs(
+  status?: PrintJobStatus,
+): Promise<PrintJob[]> {
+  if (!isSupabase) {
+    const id = getActiveRestaurantId();
+    if (!id) return [];
+    const all = [...loadLocal().printJobs].filter(
+      (j) => j.restaurant_id === id,
+    );
+    const list = status ? all.filter((j) => j.status === status) : all;
+    return list.sort((a, b) => {
+      const pa = a.status === 'pending' ? 0 : 1;
+      const pb = b.status === 'pending' ? 0 : 1;
+      return pa - pb || a.created_at.localeCompare(b.created_at);
+    });
+  }
+  const rid = requireRestaurantId();
+  let q = sb()
+    .from('print_jobs')
+    .select('*')
+    .eq('restaurant_id', rid)
+    .order('created_at', { ascending: true });
+  if (status) q = q.eq('status', status);
+  const { data, error } = await q;
+  if (error) throw error;
+  const list = (data ?? []) as PrintJob[];
+  return list.sort((a, b) => {
+    const pa = a.status === 'pending' ? 0 : 1;
+    const pb = b.status === 'pending' ? 0 : 1;
+    return pa - pb || a.created_at.localeCompare(b.created_at);
+  });
+}
+
+/** Marca a via como impressa (e por onde saiu: computador, celular
+ * ou simulação). */
+export async function markPrintJobPrinted(
+  id: string,
+  via: PrintJobVia,
+): Promise<void> {
+  const now = nowIso();
+  if (!isSupabase) {
+    const db = loadLocal();
+    const job = db.printJobs.find((j) => j.id === id);
+    if (job) {
+      job.status = 'printed';
+      job.printed_via = via;
+      job.printed_at = now;
+      saveLocal(db);
+    }
+    return;
+  }
+  const rid = requireRestaurantId();
+  const { error } = await sb()
+    .from('print_jobs')
+    .update({ status: 'printed', printed_via: via, printed_at: now })
+    .eq('id', id)
+    .eq('restaurant_id', rid);
+  if (error) throw error;
+}
+
+/** Marca a via como falha — ela continua na fila pra tentar de novo
+ * (a central mostra o aviso; nada some sem o dono ver). */
+export async function markPrintJobFailed(id: string): Promise<void> {
+  if (!isSupabase) {
+    const db = loadLocal();
+    const job = db.printJobs.find((j) => j.id === id);
+    if (job) {
+      job.status = 'failed';
+      saveLocal(db);
+    }
+    return;
+  }
+  const rid = requireRestaurantId();
+  const { error } = await sb()
+    .from('print_jobs')
+    .update({ status: 'failed' })
+    .eq('id', id)
+    .eq('restaurant_id', rid);
+  if (error) throw error;
+}
+
+/** Volta uma via com falha pra pendente (tentar imprimir de novo). */
+export async function retryPrintJob(id: string): Promise<void> {
+  if (!isSupabase) {
+    const db = loadLocal();
+    const job = db.printJobs.find((j) => j.id === id);
+    if (job) {
+      job.status = 'pending';
+      saveLocal(db);
+    }
+    return;
+  }
+  const rid = requireRestaurantId();
+  const { error } = await sb()
+    .from('print_jobs')
+    .update({ status: 'pending' })
+    .eq('id', id)
+    .eq('restaurant_id', rid);
+  if (error) throw error;
+}
+
+/**
+ * Assina as mudanças da fila de impressão em tempo real (Supabase
+ * Realtime): a central de impressão é avisada na hora que uma via
+ * nova entra na fila. No modo local não há outro aparelho — volta
+ * uma função vazia (a central usa o polling de 5s). O retorno é a
+ * função pra cancelar a assinatura.
+ */
+export function subscribePrintJobs(cb: () => void): () => void {
+  if (!isSupabase) return () => {};
+  let rid: string;
+  try {
+    rid = requireRestaurantId();
+  } catch {
+    return () => {};
+  }
+  const channel = sb()
+    .channel('print-jobs-' + rid)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'print_jobs',
+        filter: 'restaurant_id=eq.' + rid,
+      },
+      () => cb(),
+    )
+    .subscribe();
+  return () => {
+    void sb().removeChannel(channel);
+  };
 }
 
 /* ------------------------------------------------------------------ */

@@ -21,11 +21,24 @@ import type {
   OrderWithItems,
   Owner,
   PlanId,
+  PrinterBridge,
+  PrinterConfig,
+  PrinterConnection,
+  PrinterSector,
+  PrintJob,
+  PrintJobItem,
+  PrintJobVia,
   Product,
   Restaurant,
   Settings,
   Waiter,
 } from '@/lib/types';
+import {
+  buildEscPosSlip,
+  buildEscPosTestSlip,
+  decodeEscPosText,
+  sectorLabel,
+} from '@/lib/escpos';
 import { LANDING_HERO_POSTER, LANDING_HERO_VIDEO, LANDING_PRINTS } from '@/lib/landing-media';
 
 type View =
@@ -44,6 +57,7 @@ type View =
   | 'owner-waiters'
   | 'owner-menu'
   | 'owner-settings'
+  | 'print-center'
   | 'admin';
 
 function brl(cents: number): string {
@@ -323,6 +337,46 @@ function isAdminPath(): boolean {
   return p === '/adm';
 }
 
+/** true quando o endereço pede a central de impressão:
+ * ?central=impressao — o aparelho do balcão (computador ou celular
+ * velho) abre direto nela quando o dono já está logado; sem sessão
+ * de dono, cai no login do dono. */
+function isPrintCenterParam(): boolean {
+  if (typeof window === 'undefined') return false;
+  const q = new URLSearchParams(window.location.search);
+  return q.get('central') === 'impressao';
+}
+
+/** Rótulo do setor da impressora na tela. */
+function printerSectorLabel(sector: PrinterSector): string {
+  return sector === 'kitchen'
+    ? 'Cozinha'
+    : sector === 'bar'
+      ? 'Bar'
+      : 'Balcão — conta';
+}
+
+/** Rótulo da ligação da impressora na tela. */
+function printerConnectionLabel(c: PrinterConnection): string {
+  return c === 'usb' ? 'USB' : c === 'bluetooth' ? 'Bluetooth' : 'Wi-Fi ou rede';
+}
+
+/** Rótulo da ponte (quem leva a via até a impressora). */
+function printerBridgeLabel(b: PrinterBridge): string {
+  return b === 'computer' ? 'Computador do balcão' : 'Celular na central';
+}
+
+/** Rótulo de por onde a via saiu (no registro de impressas). */
+function printViaLabel(via: PrintJobVia | null | undefined): string {
+  return via === 'computer'
+    ? 'Computador'
+    : via === 'phone'
+      ? 'Celular (Bluetooth)'
+      : via === 'simulation'
+        ? 'Simulação'
+        : '—';
+}
+
 function GarcomApp() {
   const [waiterOnly, setWaiterOnly] = useState(() => isWaiterOnlyParam());
   const [view, setView] = useState<View>(() =>
@@ -511,8 +565,10 @@ function GarcomApp() {
                 await refreshOwner();
                 // O dono cai direto no painel dele (Financeiro), mesmo
                 // com 0 garçons — garçons e cardápio são cadastrados
-                // nas abas certas, lá dentro.
-                setView('owner');
+                // nas abas certas, lá dentro. No endereço da central
+                // de impressão (?central=impressao), cai direto nela:
+                // é o aparelho do balcão, que fica sempre aberto.
+                setView(isPrintCenterParam() ? 'print-center' : 'owner');
                 return;
               }
             } catch {
@@ -865,7 +921,8 @@ function GarcomApp() {
     await refreshOwner();
     // O dono cai direto no painel dele (Financeiro), mesmo com 0
     // garçons — garçons e cardápio são cadastrados nas abas certas.
-    setView('owner');
+    // No endereço da central (?central=impressao), cai direto nela.
+    setView(isPrintCenterParam() ? 'print-center' : 'owner');
   }
 
   async function handleOwnerLogin(login: string, password: string) {
@@ -1305,6 +1362,75 @@ function GarcomApp() {
     return { kitchen, bar };
   }
 
+  /**
+   * Enfileira as vias da impressão automática (cozinha, bar e/ou
+   * balcão) a partir do mesmo TicketData que aparece na tela. A via é
+   * fotografada aqui (itens, descrição do prato, como servir, totais
+   * da conta) — a central de impressão não precisa buscar o pedido de
+   * novo. Se enfileirar falhar, o garçom não trava: a via continua na
+   * tela dele e a central só não recebe essa via (o erro fica no
+   * console; o pedido em si já foi enviado/fechado).
+   */
+  async function enqueuePrintJobsForTicket(ticket: TicketData) {
+    try {
+      const snap = (items: OrderItem[]): PrintJobItem[] =>
+        items.map((i) => ({
+          product_name: i.product_name,
+          qty: i.qty,
+          price_cents: i.price_cents,
+          serve: i.serve ?? null,
+          note: i.note ?? null,
+          description:
+            products.find((p) => p.id === i.product_id)?.description ??
+            null,
+        }));
+      const jobs: Array<
+        Omit<PrintJob, 'id' | 'status' | 'created_at' | 'printed_at'>
+      > = [];
+      if (ticket.kind === 'send') {
+        if (ticket.kitchen.length > 0) {
+          jobs.push({
+            sector: 'kitchen',
+            kind: 'send',
+            order_number: ticket.orderNumber ?? 0,
+            table_number: ticket.tableNumber,
+            waiter_name: ticket.waiterName ?? '',
+            items: snap(ticket.kitchen),
+            bill: null,
+          });
+        }
+        if (ticket.bar.length > 0) {
+          jobs.push({
+            sector: 'bar',
+            kind: 'send',
+            order_number: ticket.orderNumber ?? 0,
+            table_number: ticket.tableNumber,
+            waiter_name: ticket.waiterName ?? '',
+            items: snap(ticket.bar),
+            bill: null,
+          });
+        }
+      } else if (ticket.bill) {
+        jobs.push({
+          sector: 'counter',
+          kind: 'close',
+          order_number: ticket.orderNumber ?? 0,
+          table_number: ticket.tableNumber,
+          waiter_name: ticket.waiterName ?? ticket.bill.waiter_name,
+          items: snap([...ticket.kitchen, ...ticket.bar]),
+          bill: {
+            subtotal_cents: ticket.bill.subtotal_cents,
+            fee_cents: ticket.bill.fee_cents,
+            total_cents: ticket.bill.total_cents,
+          },
+        });
+      }
+      if (jobs.length > 0) await store.enqueuePrintJobs(jobs);
+    } catch (e) {
+      console.error('Não foi possível enfileirar a via pra impressão.', e);
+    }
+  }
+
   async function sendOrder() {
     if (!currentOrder) return;
     const pending = currentOrder.items.filter((i) => !i.sent);
@@ -1333,6 +1459,9 @@ function GarcomApp() {
         waiterName: currentOrder.order.waiter_name,
       };
       setTickets(ticket);
+      // Enfileira as vias pra impressão automática (cozinha/bar) — a
+      // central do balcão imprime sozinha; sem travar o garçom.
+      void enqueuePrintJobsForTicket(ticket);
       // Guarda as vias impressas desta mesa p/ reabrir o cupom no resumo.
       setPrintedVias((prev) => [
         ...prev.filter((v) => v.orderId !== currentOrder.order.id || v.station === 'Balcão — conta'),
@@ -1405,6 +1534,8 @@ function GarcomApp() {
         waiterName: bill.waiter_name,
       };
       setTickets(ticket);
+      // Enfileira a conta do balcão pra impressão automática.
+      void enqueuePrintJobsForTicket(ticket);
       setPrintedVias((prev) => [
         ...prev,
         {
@@ -1740,7 +1871,21 @@ function GarcomApp() {
         settings={settings}
         restaurantName={restaurant?.name ?? ''}
         ownerName={ownerSession.name}
+        printers={settings.printers ?? []}
         onSaved={refreshOwner}
+        onSavedPrinters={refreshOwner}
+        onOpenPrintCenter={() => setView('print-center')}
+        onNavigate={setView}
+        onLogout={handleOwnerLogout}
+      />
+    );
+  }
+
+  if (view === 'print-center' && ownerSession) {
+    return (
+      <PrintCenterView
+        restaurantName={restaurant?.name ?? ''}
+        ownerName={ownerSession.name}
         onNavigate={setView}
         onLogout={handleOwnerLogout}
       />
@@ -3315,6 +3460,105 @@ function TicketsModal({
               : 'OK, voltar à mesa')}
         </button>
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Via da fila de impressão — um só cupom (um setor) a partir do       */
+/* PrintJob. Mesmo conteúdo e mesmas classes da via na tela            */
+/* (TicketsModal): cabeçalho, número, mesa/hora/garçom, faixa do       */
+/* setor, itens, observações e rodapé; a conta traz valores e TOTAL.   */
+/* Usado na prévia da central, no teste da impressora e na área de     */
+/* impressão do computador (#print-area).                              */
+/* ------------------------------------------------------------------ */
+
+function PrintJobSlip({
+  job,
+  restaurantName,
+}: {
+  job: PrintJob;
+  restaurantName: string;
+}) {
+  const orderNo = String(job.order_number).padStart(4, '0');
+  const logo =
+    job.sector === 'kitchen' ? '👨‍🍳' : job.sector === 'bar' ? '🥤' : '🧾';
+  const notes = job.items
+    .filter((i) => i.note)
+    .map((i) => `${i.qty}× ${i.product_name}: ${i.note}`);
+  return (
+    <div className="ticket">
+      <div className="t-head">
+        <span className="t-logo" aria-hidden>
+          {logo}
+        </span>
+        <span className="t-name">{restaurantName}</span>
+        <span className="t-num">
+          Pedido Nº
+          <strong>{orderNo}</strong>
+        </span>
+      </div>
+      <div className="t-meta">
+        Mesa: {job.table_number} | Hora: {formatTime(job.created_at)} |
+        Garçom: {job.waiter_name}
+      </div>
+      <div className="t-band">
+        {logo}&nbsp; {sectorLabel(job.sector)}
+      </div>
+      <div className="t-cols">
+        <span className="t-qty">Qtd.</span>
+        <span className="t-item">Produto</span>
+        {job.kind === 'close' && <span className="t-price">Valor</span>}
+      </div>
+      <hr />
+      {job.items.map((i, idx) => (
+        <div key={`${job.id}-${idx}`}>
+          <div className="t-row">
+            <span className="t-qty">{i.qty}×</span>
+            <span className="t-item">{i.product_name}</span>
+            {job.kind === 'close' && (
+              <span className="t-price">{brl(i.price_cents * i.qty)}</span>
+            )}
+          </div>
+          {job.sector === 'kitchen' && i.description && (
+            <div className="t-detail">{i.description}</div>
+          )}
+          {i.serve && <div className="t-detail">{i.serve}</div>}
+          {i.note && <div className="t-detail">obs: {i.note}</div>}
+        </div>
+      ))}
+      {job.kind === 'send' && notes.length > 0 && (
+        <div className="t-obs">
+          <strong>Observações:</strong>
+          {notes.map((n) => (
+            <div key={n}>{n}</div>
+          ))}
+        </div>
+      )}
+      <hr />
+      {job.kind === 'close' && job.bill ? (
+        <>
+          <div className="t-line">
+            <span>Subtotal</span>
+            <span>{brl(job.bill.subtotal_cents)}</span>
+          </div>
+          <div className="t-line">
+            <span>Taxa de serviço</span>
+            <span>{brl(job.bill.fee_cents)}</span>
+          </div>
+          <div className="t-line t-total">
+            <span>TOTAL</span>
+            <span>{brl(job.bill.total_cents)}</span>
+          </div>
+          <hr />
+          <div className="t-foot">Obrigado pela preferência!</div>
+        </>
+      ) : (
+        <div className="t-foot">
+          Pedido em preparo!
+          <span>Qualquer dúvida, chame o garçom.</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -5300,22 +5544,805 @@ function OwnerMenuView({
 
 /* ------------------- DONO: AJUSTES ------------------- */
 
+/* ------------------------------------------------------------------ */
+/* Central de impressão — o aparelho do balcão (computador ou celular  */
+/* velho) que fica aberto ouvindo os pedidos e imprimindo sozinho.     */
+/*                                                                      */
+/* Dois caminhos, o dono escolhe por setor em Ajustes → Impressoras:    */
+/*  - Computador do balcão: imprime pelo navegador (window.print com   */
+/*    a via em #print-area, CSS 80mm). Pra não pedir confirmação a     */
+/*    cada cupom, o Chrome tem que abrir com --kiosk-printing.         */
+/*  - Celular na central: manda os bytes ESC/POS direto pra            */
+/*    impressora Bluetooth (Web Bluetooth, serviço UART). Sem          */
+/*    Bluetooth, volta pra impressão do sistema.                       */
+/*                                                                      */
+/* Sem impressora ligada, o modo simulação registra a via como         */
+/* impressa (simulada) — pra testar o fluxo sem hardware. Via que      */
+/* não saiu fica 'pending' na fila até imprimir: nada se perde sem     */
+/* aviso (falha também fica na fila, com "Tentar de novo").            */
+/* ------------------------------------------------------------------ */
+
+/** Serviço UART (Nordic) — o que as térmicas Bluetooth baratas
+ * (XPrinter, Elgin, Bematech e similares) expõem pro Web Bluetooth. */
+const BT_NUS_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const BT_NUS_TX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+
+type BtState = 'unsupported' | 'disconnected' | 'connecting' | 'connected' | 'error';
+
+const PRINT_SECTORS: PrinterSector[] = ['kitchen', 'bar', 'counter'];
+
+function PrintCenterView({
+  restaurantName,
+  ownerName,
+  onNavigate,
+  onLogout,
+}: {
+  restaurantName: string;
+  ownerName: string;
+  onNavigate: (v: View) => void;
+  onLogout: () => void;
+}) {
+  const [printers, setPrinters] = useState<PrinterConfig[]>([]);
+  const [jobs, setJobs] = useState<PrintJob[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [autoPrint, setAutoPrint] = useState(
+    () => safeGet('central_autoprint_v1') !== '0',
+  );
+  const [simulation, setSimulation] = useState(
+    () => safeGet('central_simulacao_v1') === '1',
+  );
+  const [btState, setBtState] = useState<BtState>('disconnected');
+  const [btError, setBtError] = useState('');
+  const [printingJobId, setPrintingJobId] = useState<string | null>(null);
+  const [printAreaJob, setPrintAreaJob] = useState<PrintJob | null>(null);
+  const [previewJob, setPreviewJob] = useState<PrintJob | null>(null);
+  const btCharRef = useRef<unknown>(null);
+  /** trava: só um cupom por vez no diálogo de impressão/Bluetooth */
+  const printingRef = useRef(false);
+
+  async function refreshJobs() {
+    try {
+      const list = await store.listPrintJobs();
+      setJobs(list);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Não foi possível ler a fila.');
+    }
+  }
+
+  useEffect(() => {
+    let alive = true;
+    let unsub: (() => void) | null = null;
+    (async () => {
+      setLoading(true);
+      try {
+        const [cfg, list] = await Promise.all([
+          store.getPrinterConfig(),
+          store.listPrintJobs(),
+        ]);
+        if (!alive) return;
+        setPrinters(cfg);
+        setJobs(list);
+      } catch (e) {
+        if (alive) {
+          setError(
+            e instanceof Error ? e.message : 'Não foi possível carregar a central.',
+          );
+        }
+      } finally {
+        if (alive) setLoading(false);
+      }
+      if (isSupabase) {
+        try {
+          unsub = store.subscribePrintJobs(() => {
+            void refreshJobs();
+          });
+        } catch {
+          /* sem tempo real, o polling abaixo cobre */
+        }
+      }
+    })();
+    // Polling de reserva (5s): cobre o modo local e qualquer falha do
+    // tempo real — a fila nunca fica desatualizada.
+    const timer = setInterval(() => {
+      void refreshJobs();
+    }, 5000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      if (unsub) unsub();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Quando o diálogo de impressão fecha, a via sai da fila como
+   * impressa (computador). */
+  useEffect(() => {
+    const onAfterPrint = () => {
+      if (!printingJobId) return;
+      const id = printingJobId;
+      setPrintingJobId(null);
+      setPrintAreaJob(null);
+      printingRef.current = false;
+      void store
+        .markPrintJobPrinted(id, 'computer')
+        .then(() => refreshJobs())
+        .catch(() => {
+          setError('A via saiu no papel, mas não foi marcada como impressa.');
+        });
+    };
+    window.addEventListener('afterprint', onAfterPrint);
+    return () => window.removeEventListener('afterprint', onAfterPrint);
+  }, [printingJobId]);
+
+  /** Renderizou a via na área de impressão: abre o diálogo. */
+  useEffect(() => {
+    if (!printAreaJob) return;
+    const t = setTimeout(() => {
+      window.print();
+    }, 350);
+    // Segurança: se o diálogo nunca fechar (navegador sem suporte),
+    // destrava a fila depois de 2 minutos.
+    const guard = setTimeout(() => {
+      if (printingRef.current && printingJobId === printAreaJob.id) {
+        printingRef.current = false;
+        setPrintingJobId(null);
+        setPrintAreaJob(null);
+      }
+    }, 120000);
+    return () => {
+      clearTimeout(t);
+      clearTimeout(guard);
+    };
+  }, [printAreaJob, printingJobId]);
+
+  /** Processa a fila sozinha: pega a primeira via pendente e imprime
+   * pelo caminho do setor dela (computador, celular ou simulação). */
+  useEffect(() => {
+    if (loading) return;
+    if (printingRef.current) return;
+    const pending = jobs.filter((j) => j.status === 'pending');
+    if (pending.length === 0) return;
+    const job = pending[0];
+    const cfg = printers.find((p) => p.sector === job.sector);
+    // Sem impressora cadastrada ou desligada: a via fica pendente na
+    // fila, visível, até o dono ligar a impressora (nada some).
+    if (!cfg || !cfg.enabled) return;
+    if (simulation) {
+      void (async () => {
+        await store.markPrintJobPrinted(job.id, 'simulation');
+        await refreshJobs();
+      })();
+      return;
+    }
+    if (cfg.bridge === 'computer') {
+      if (!autoPrint) return;
+      printingRef.current = true;
+      setPrintingJobId(job.id);
+      setPrintAreaJob(job);
+      return;
+    }
+    // Ponte do celular: só manda sozinho com o Bluetooth conectado.
+    if (btState === 'connected' && btCharRef.current) {
+      printingRef.current = true;
+      void sendViaBluetooth(job);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobs, printers, simulation, autoPrint, btState, loading]);
+
+  async function sendViaBluetooth(job: PrintJob) {
+    try {
+      const bytes = buildEscPosSlip(job, restaurantName);
+      const char = btCharRef.current as {
+        writeValueWithoutResponse?: (d: Uint8Array) => Promise<void>;
+        writeValue?: (d: Uint8Array) => Promise<void>;
+      } | null;
+      if (!char) throw new Error('Bluetooth desconectado.');
+      // Escreve em pedaços (a maioria das térmicas aceita ~180 bytes
+      // por escrita sem resposta).
+      const chunk = 180;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        const slice = bytes.slice(i, i + chunk);
+        if (typeof char.writeValueWithoutResponse === 'function') {
+          await char.writeValueWithoutResponse(slice);
+        } else if (typeof char.writeValue === 'function') {
+          await char.writeValue(slice);
+        } else {
+          throw new Error('Impressora sem escrita Bluetooth.');
+        }
+      }
+      await store.markPrintJobPrinted(job.id, 'phone');
+      setNotice(
+        `Via ${String(job.order_number).padStart(4, '0')} impressa no ${printerSectorLabel(job.sector)} (Bluetooth).`,
+      );
+    } catch (e) {
+      await store.markPrintJobFailed(job.id).catch(() => {});
+      setNotice(
+        'Falha no Bluetooth — a via ficou na fila. Verifique a impressora e toque em "Tentar de novo".',
+      );
+    } finally {
+      printingRef.current = false;
+      await refreshJobs();
+    }
+  }
+
+  async function connectBluetooth() {
+    const nav = navigator as unknown as { bluetooth?: {
+      requestDevice: (opts: unknown) => Promise<{
+        name?: string;
+        gatt: { connect: () => Promise<{
+          getPrimaryService: (uuid: string) => Promise<{
+            getCharacteristic: (uuid: string) => Promise<unknown>;
+          }>;
+        }> };
+        addEventListener: (ev: string, cb: () => void) => void;
+      }>;
+    } };
+    if (!nav.bluetooth) {
+      setBtState('unsupported');
+      setBtError(
+        'Este aparelho/navegador não tem Bluetooth web. Use o computador do balcão ou imprima pelo sistema.',
+      );
+      return;
+    }
+    setBtState('connecting');
+    setBtError('');
+    try {
+      const device = await nav.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: [BT_NUS_SERVICE],
+      });
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(BT_NUS_SERVICE);
+      const char = await service.getCharacteristic(BT_NUS_TX);
+      btCharRef.current = char;
+      device.addEventListener('gattserverdisconnected', () => {
+        btCharRef.current = null;
+        setBtState('disconnected');
+      });
+      setBtState('connected');
+      setNotice(
+        `Impressora Bluetooth conectada (${device.name ?? 'sem nome'}). As vias do celular saem sozinhas agora.`,
+      );
+    } catch (e) {
+      btCharRef.current = null;
+      setBtState('error');
+      setBtError(
+        e instanceof Error ? e.message : 'Não foi possível conectar.',
+      );
+    }
+  }
+
+  async function testBluetooth() {
+    if (btState !== 'connected' || !btCharRef.current) {
+      setNotice('Conecte a impressora Bluetooth primeiro.');
+      return;
+    }
+    try {
+      const sector =
+        printers.find((p) => p.bridge === 'phone' && p.enabled)?.sector ??
+        'kitchen';
+      const bytes = buildEscPosTestSlip(restaurantName, sector);
+      const char = btCharRef.current as {
+        writeValueWithoutResponse?: (d: Uint8Array) => Promise<void>;
+        writeValue?: (d: Uint8Array) => Promise<void>;
+      };
+      const chunk = 180;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        const slice = bytes.slice(i, i + chunk);
+        if (typeof char.writeValueWithoutResponse === 'function') {
+          await char.writeValueWithoutResponse(slice);
+        } else if (typeof char.writeValue === 'function') {
+          await char.writeValue(slice);
+        }
+      }
+      setNotice('Cupom de teste enviado por Bluetooth.');
+    } catch {
+      setNotice('Falha ao enviar o teste por Bluetooth.');
+    }
+  }
+
+  /** Imprime uma via agora (botão da fila). */
+  async function manualPrint(job: PrintJob) {
+    if (printingRef.current) return;
+    const cfg = printers.find((p) => p.sector === job.sector);
+    if (simulation) {
+      await store.markPrintJobPrinted(job.id, 'simulation');
+      setNotice(
+        `Via ${String(job.order_number).padStart(4, '0')} registrada como impressa (simulação).`,
+      );
+      await refreshJobs();
+      return;
+    }
+    if (!cfg || !cfg.enabled) {
+      setNotice(
+        'Sem impressora cadastrada neste setor — a via fica na fila. Cadastre em Ajustes → Impressoras.',
+      );
+      return;
+    }
+    if (cfg.bridge === 'phone') {
+      if (btState === 'connected' && btCharRef.current) {
+        printingRef.current = true;
+        await sendViaBluetooth(job);
+        return;
+      }
+      setNotice(
+        'Bluetooth desligado — imprimindo pelo sistema. Conecte a impressora Bluetooth pra mandar direto.',
+      );
+    }
+    printingRef.current = true;
+    setPrintingJobId(job.id);
+    setPrintAreaJob(job);
+  }
+
+  async function reprint(job: PrintJob) {
+    await store.retryPrintJob(job.id);
+    setNotice(
+      `Via ${String(job.order_number).padStart(4, '0')} voltou pra fila pra imprimir de novo.`,
+    );
+    await refreshJobs();
+  }
+
+  async function retryFailed(job: PrintJob) {
+    await store.retryPrintJob(job.id);
+    setNotice(
+      `Via ${String(job.order_number).padStart(4, '0')} voltou pra fila.`,
+    );
+    await refreshJobs();
+  }
+
+  const pendingJobs = jobs.filter((j) => j.status === 'pending');
+  const failedJobs = jobs.filter((j) => j.status === 'failed');
+  const printedJobs = jobs
+    .filter((j) => j.status === 'printed')
+    .slice(-10)
+    .reverse();
+  const hasPhoneBridge = printers.some(
+    (p) => p.bridge === 'phone' && p.enabled,
+  );
+  const totalItems = (j: PrintJob) =>
+    j.items.reduce((s, i) => s + i.qty, 0);
+
+  return (
+    <div className="app app-owner">
+      <div className="print-center-head">
+        <div>
+          <h1 style={{ margin: 0 }}>Central de impressão</h1>
+          <p className="hint" style={{ margin: '4px 0 0' }}>
+            {restaurantName} · {ownerName} · fica aberta no balcão
+          </p>
+        </div>
+        <div className="print-center-head-btns">
+          <button
+            className="btn btn-white"
+            onClick={() => onNavigate('owner-settings')}
+          >
+            Impressoras
+          </button>
+          <button className="btn btn-white" onClick={onLogout}>
+            Sair
+          </button>
+        </div>
+      </div>
+      <div className="content">
+        {error && <div className="error">{error}</div>}
+        {notice && <div className="ok-note">{notice}</div>}
+        {simulation && (
+          <div className="print-sim-banner">
+            Modo simulação ligado — nenhuma via sai na impressora de
+            verdade. As vias são registradas como "impressa (simulada)"
+            pra testar o fluxo sem hardware.
+          </div>
+        )}
+        {loading ? (
+          <div className="card">Carregando a central…</div>
+        ) : (
+          <>
+            <div className="card">
+              <h2 style={{ marginTop: 0 }}>Impressoras por setor</h2>
+              {PRINT_SECTORS.map((sector) => {
+                const cfg = printers.find((p) => p.sector === sector);
+                const pending = pendingJobs.filter(
+                  (j) => j.sector === sector,
+                ).length;
+                return (
+                  <div key={sector} className="printer-status">
+                    <div>
+                      <strong>{printerSectorLabel(sector)}</strong>
+                      <div className="hint">
+                        {cfg
+                          ? `${cfg.name || 'Sem nome'} · ${printerConnectionLabel(cfg.connection)} · ${printerBridgeLabel(cfg.bridge)}${cfg.enabled ? '' : ' · desligada'}`
+                          : 'Sem impressora cadastrada'}
+                      </div>
+                      {cfg?.bridge === 'phone' && (
+                        <div className="hint">
+                          Bluetooth:{' '}
+                          {btState === 'connected'
+                            ? 'conectado'
+                            : btState === 'connecting'
+                              ? 'conectando…'
+                              : btState === 'unsupported'
+                                ? 'não disponível neste aparelho'
+                                : 'desligado'}
+                        </div>
+                      )}
+                    </div>
+                    <span
+                      className={
+                        'print-badge ' +
+                        (pending > 0 ? 'print-badge-pending' : 'print-badge-ok')
+                      }
+                    >
+                      {pending > 0
+                        ? `${pending} na fila`
+                        : 'fila vazia'}
+                    </span>
+                  </div>
+                );
+              })}
+              <div className="field" style={{ marginTop: 12 }}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={autoPrint}
+                    onChange={(e) => {
+                      setAutoPrint(e.target.checked);
+                      safeSet(
+                        'central_autoprint_v1',
+                        e.target.checked ? '1' : '0',
+                      );
+                    }}
+                  />{' '}
+                  Imprimir automaticamente quando a via chegar
+                </label>
+              </div>
+              <div className="field">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={simulation}
+                    onChange={(e) => {
+                      setSimulation(e.target.checked);
+                      safeSet(
+                        'central_simulacao_v1',
+                        e.target.checked ? '1' : '0',
+                      );
+                    }}
+                  />{' '}
+                  Modo simulação (sem impressora ligada)
+                </label>
+              </div>
+              {hasPhoneBridge && (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    className="btn btn-purple"
+                    disabled={
+                      btState === 'connecting' || btState === 'connected'
+                    }
+                    onClick={() => void connectBluetooth()}
+                  >
+                    {btState === 'connected'
+                      ? 'Bluetooth conectado'
+                      : btState === 'connecting'
+                        ? 'Conectando…'
+                        : 'Conectar impressora Bluetooth'}
+                  </button>
+                  {btState === 'connected' && (
+                    <button
+                      className="btn btn-white"
+                      onClick={() => void testBluetooth()}
+                    >
+                      Testar Bluetooth
+                    </button>
+                  )}
+                </div>
+              )}
+              {btError && <div className="error">{btError}</div>}
+              <p className="hint">
+                No computador do balcão, pra imprimir sem pedir
+                confirmação a cada cupom, abra o Chrome com a opção
+                --kiosk-printing. Sem ela, o diálogo de impressão abre
+                uma vez por cupom — a via só sai da fila depois que
+                você confirma.
+              </p>
+            </div>
+
+            <div className="card">
+              <h2 style={{ marginTop: 0 }}>
+                Fila de impressão ({pendingJobs.length + failedJobs.length})
+              </h2>
+              {pendingJobs.length === 0 && failedJobs.length === 0 ? (
+                <p className="hint">Nenhuma via esperando. Quando o garçom enviar um pedido ou fechar uma mesa, a via aparece aqui e imprime sozinha.</p>
+              ) : (
+                <>
+                  {failedJobs.map((job) => (
+                    <div key={job.id} className="print-job print-job-failed">
+                      <div>
+                        <strong>
+                          {printerSectorLabel(job.sector)} · Pedido Nº{' '}
+                          {String(job.order_number).padStart(4, '0')}
+                        </strong>
+                        <div className="hint">
+                          Mesa {job.table_number} ·{' '}
+                          {formatTime(job.created_at)} · Garçom{' '}
+                          {job.waiter_name} · {totalItems(job)} item(ns)
+                        </div>
+                        <div className="error" style={{ marginTop: 4 }}>
+                          Falha na impressão — a via não se perdeu, está
+                          na fila.
+                        </div>
+                      </div>
+                      <div className="print-job-btns">
+                        <button
+                          className="btn btn-orange"
+                          onClick={() => void retryFailed(job)}
+                        >
+                          Tentar de novo
+                        </button>
+                        <button
+                          className="btn btn-white"
+                          onClick={() => setPreviewJob(job)}
+                        >
+                          Ver via
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {pendingJobs.map((job) => {
+                    const cfg = printers.find((p) => p.sector === job.sector);
+                    const noPrinter = !cfg || !cfg.enabled;
+                    return (
+                      <div key={job.id} className="print-job">
+                        <div>
+                          <strong>
+                            {printerSectorLabel(job.sector)} · Pedido Nº{' '}
+                            {String(job.order_number).padStart(4, '0')}
+                          </strong>
+                          <div className="hint">
+                            Mesa {job.table_number} ·{' '}
+                            {formatTime(job.created_at)} · Garçom{' '}
+                            {job.waiter_name} · {totalItems(job)} item(ns)
+                            {cfg ? ` · ${printerBridgeLabel(cfg.bridge)}` : ''}
+                          </div>
+                          {noPrinter && (
+                            <div className="hint" style={{ color: '#b45309' }}>
+                              Sem impressora neste setor — a via espera
+                              aqui até o dono ligar uma em Ajustes →
+                              Impressoras.
+                            </div>
+                          )}
+                          {cfg?.bridge === 'phone' &&
+                            btState !== 'connected' && (
+                              <div
+                                className="hint"
+                                style={{ color: '#b45309' }}
+                              >
+                                Aguardando o Bluetooth — conecte a
+                                impressora acima.
+                              </div>
+                            )}
+                        </div>
+                        <div className="print-job-btns">
+                          <button
+                            className="btn btn-orange"
+                            disabled={printingRef.current}
+                            onClick={() => void manualPrint(job)}
+                          >
+                            Imprimir agora
+                          </button>
+                          <button
+                            className="btn btn-white"
+                            onClick={() => setPreviewJob(job)}
+                          >
+                            Ver via
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+
+            {printedJobs.length > 0 && (
+              <div className="card">
+                <h2 style={{ marginTop: 0 }}>Últimas impressas</h2>
+                {printedJobs.map((job) => (
+                  <div key={job.id} className="print-job print-job-done">
+                    <div>
+                      <strong>
+                        {printerSectorLabel(job.sector)} · Pedido Nº{' '}
+                        {String(job.order_number).padStart(4, '0')}
+                      </strong>
+                      <div className="hint">
+                        Mesa {job.table_number} ·{' '}
+                        {job.printed_at
+                          ? formatTime(job.printed_at)
+                          : formatTime(job.created_at)}{' '}
+                        · {printViaLabel(job.printed_via)}
+                      </div>
+                    </div>
+                    <div className="print-job-btns">
+                      <button
+                        className="btn btn-white"
+                        onClick={() => void reprint(job)}
+                      >
+                        Reimprimir
+                      </button>
+                      <button
+                        className="btn btn-white"
+                        onClick={() => setPreviewJob(job)}
+                      >
+                        Ver via
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {previewJob && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h3 style={{ marginTop: 0 }}>
+              Via — {printerSectorLabel(previewJob.sector)} · Pedido Nº{' '}
+              {String(previewJob.order_number).padStart(4, '0')}
+            </h3>
+            <PrintJobSlip
+              job={previewJob}
+              restaurantName={restaurantName}
+            />
+            <p className="hint">
+              Conteúdo em ESC/POS (Bluetooth):{' '}
+              <code>
+                {decodeEscPosText(
+                  buildEscPosSlip(previewJob, restaurantName),
+                )
+                  .split('\n')
+                  .slice(0, 3)
+                  .join(' / ')}
+                …
+              </code>
+            </p>
+            <button
+              className="btn btn-purple"
+              onClick={() => setPreviewJob(null)}
+            >
+              Fechar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Área de impressão do computador: fora da tela, só aparece no
+          papel (CSS @media print). */}
+      <div id="print-area" aria-hidden="true">
+        {printAreaJob && (
+          <PrintJobSlip
+            job={printAreaJob}
+            restaurantName={restaurantName}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function OwnerSettingsView({
   settings,
   restaurantName,
   ownerName,
+  printers,
   onSaved,
+  onSavedPrinters,
+  onOpenPrintCenter,
   onNavigate,
   onLogout,
 }: {
   settings: Settings;
   restaurantName: string;
   ownerName: string;
+  /** impressoras cadastradas (uma por setor) */
+  printers: PrinterConfig[];
   onSaved: () => Promise<void>;
+  onSavedPrinters: () => Promise<void>;
+  onOpenPrintCenter: () => void;
   onNavigate: (v: View) => void;
   onLogout: () => void;
 }) {
   const [fee, setFee] = useState(String(settings.service_fee_pct));
+  /** rascunho das impressoras (3 setores) — salvo à parte dos ajustes */
+  const [draft, setDraft] = useState<PrinterConfig[]>(() =>
+    PRINT_SECTORS.map((sector) => {
+      const found = (printers ?? []).find((p) => p.sector === sector);
+      return (
+        found ?? {
+          sector,
+          name: '',
+          connection: 'usb',
+          bridge: 'computer',
+          enabled: false,
+        }
+      );
+    }),
+  );
+  const [printersSaved, setPrintersSaved] = useState(false);
+  const [printersBusy, setPrintersBusy] = useState(false);
+  const [printersError, setPrintersError] = useState('');
+  /** cupom de teste em prévia (modal) */
+  const [testJob, setTestJob] = useState<PrintJob | null>(null);
+
+  function setDraftSector(
+    sector: PrinterSector,
+    patch: Partial<PrinterConfig>,
+  ) {
+    setDraft((prev) =>
+      prev.map((p) => (p.sector === sector ? { ...p, ...patch } : p)),
+    );
+  }
+
+  async function savePrinters() {
+    setPrintersError('');
+    setPrintersSaved(false);
+    setPrintersBusy(true);
+    try {
+      // Só grava os setores com nome (setor sem nome = sem impressora).
+      const list = draft
+        .filter((p) => p.name.trim().length > 0)
+        .map((p) => ({ ...p, name: p.name.trim() }));
+      await store.savePrinterConfig(list);
+      await onSavedPrinters();
+      setPrintersSaved(true);
+    } catch (e) {
+      setPrintersError(
+        e instanceof Error ? e.message : 'Não foi possível salvar.',
+      );
+    } finally {
+      setPrintersBusy(false);
+    }
+  }
+
+  /** Monta o cupom de teste de um setor (prévia + impressão). */
+  function openTest(sector: PrinterSector) {
+    const job: PrintJob = {
+      id: 'teste-' + sector,
+      sector,
+      kind: sector === 'counter' ? 'close' : 'send',
+      order_number: 0,
+      table_number: 0,
+      waiter_name: 'Teste',
+      items:
+        sector === 'counter'
+          ? [
+              { product_name: 'Prato teste', qty: 1, price_cents: 2500 },
+              { product_name: 'Bebida teste', qty: 1, price_cents: 899 },
+            ]
+          : [
+              {
+                product_name: 'Item teste',
+                qty: 1,
+                price_cents: 1000,
+                description:
+                  sector === 'kitchen'
+                    ? 'o que vem no prato (teste)'
+                    : undefined,
+                serve:
+                  sector === 'bar' ? 'copo com limao e gelo' : undefined,
+              },
+            ],
+      bill:
+        sector === 'counter'
+          ? { subtotal_cents: 3399, fee_cents: 102, total_cents: 3501 }
+          : null,
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    };
+    setTestJob(job);
+  }
   const [commission, setCommission] = useState(
     String(settings.default_commission_pct ?? 8),
   );
@@ -5413,6 +6440,162 @@ function OwnerSettingsView({
             Salvar ajustes
           </button>
         </div>
+
+        {/* Impressoras térmicas — o dono liga sozinho, sem técnico:
+            cadastra a impressora de cada setor (nome, ligação e ponte),
+            testa e abre a central de impressão. */}
+        <div className="card">
+          <h2>Impressoras</h2>
+          <p className="hint" style={{ marginTop: 0 }}>
+            Cada setor tem a sua impressora térmica (80mm, ESC/POS — a
+            que você já tem no restaurante). Escolha por onde a via
+            chega até ela: pelo computador do balcão ou pelo celular
+            parado no balcão (Bluetooth). Depois é só apertar
+            "Testar" — sai um cupom de teste.
+          </p>
+          {printersError && <div className="error">{printersError}</div>}
+          {printersSaved && (
+            <div className="ok-note">Impressoras salvas.</div>
+          )}
+          {draft.map((cfg) => (
+            <div key={cfg.sector} className="printer-card">
+              <strong>{printerSectorLabel(cfg.sector)}</strong>
+              <div className="field">
+                <label htmlFor={`printer-name-${cfg.sector}`}>
+                  Nome da impressora
+                </label>
+                <input
+                  id={`printer-name-${cfg.sector}`}
+                  placeholder="Ex.: Bematech da cozinha"
+                  value={cfg.name}
+                  onChange={(e) =>
+                    setDraftSector(cfg.sector, { name: e.target.value })
+                  }
+                />
+              </div>
+              <div className="field">
+                <label htmlFor={`printer-conn-${cfg.sector}`}>
+                  Como ela liga
+                </label>
+                <select
+                  id={`printer-conn-${cfg.sector}`}
+                  value={cfg.connection}
+                  onChange={(e) =>
+                    setDraftSector(cfg.sector, {
+                      connection: e.target.value as PrinterConnection,
+                    })
+                  }
+                >
+                  <option value="usb">USB</option>
+                  <option value="bluetooth">Bluetooth</option>
+                  <option value="wifi">Wi-Fi ou rede</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor={`printer-bridge-${cfg.sector}`}>
+                  Quem leva a via até ela
+                </label>
+                <select
+                  id={`printer-bridge-${cfg.sector}`}
+                  value={cfg.bridge}
+                  onChange={(e) =>
+                    setDraftSector(cfg.sector, {
+                      bridge: e.target.value as PrinterBridge,
+                    })
+                  }
+                >
+                  <option value="computer">Computador do balcão</option>
+                  <option value="phone">Celular na central</option>
+                </select>
+                <p className="hint" style={{ marginTop: 6, marginBottom: 0 }}>
+                  {cfg.bridge === 'computer'
+                    ? 'O computador do balcão fica com a central aberta e imprime pelo navegador.'
+                    : 'Um celular velho parado no balcão, com a central aberta, manda a via por Bluetooth.'}
+                </p>
+              </div>
+              <div className="field">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={cfg.enabled}
+                    onChange={(e) =>
+                      setDraftSector(cfg.sector, {
+                        enabled: e.target.checked,
+                      })
+                    }
+                  />{' '}
+                  Impressão automática ligada
+                </label>
+              </div>
+              <button
+                className="btn btn-white"
+                onClick={() => openTest(cfg.sector)}
+              >
+                Testar
+              </button>
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-purple"
+              disabled={printersBusy}
+              onClick={() => void savePrinters()}
+            >
+              Salvar impressoras
+            </button>
+            <button className="btn btn-orange" onClick={onOpenPrintCenter}>
+              Abrir central de impressão
+            </button>
+          </div>
+          <p className="hint">
+            Sem impressora cadastrada, a via fica na fila da central como
+            pendente — nada se perde. Pra testar sem hardware, ligue o
+            modo simulação na central.
+          </p>
+        </div>
+      </div>
+
+      {testJob && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h3 style={{ marginTop: 0 }}>
+              Teste — {printerSectorLabel(testJob.sector)}
+            </h3>
+            {!(draft.find((p) => p.sector === testJob.sector)?.name ?? '')
+              .trim() && (
+              <div className="print-sim-banner">
+                Simulação — nenhuma impressora cadastrada neste setor.
+                Cadastre o nome acima e salve, ou teste na central de
+                impressão.
+              </div>
+            )}
+            <PrintJobSlip
+              job={testJob}
+              restaurantName={restaurantName}
+            />
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                className="btn btn-orange"
+                onClick={() => window.print()}
+              >
+                Imprimir teste
+              </button>
+              <button
+                className="btn btn-white"
+                onClick={() => setTestJob(null)}
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Área de impressão do teste: fora da tela, só sai no papel. */}
+      <div id="print-area" aria-hidden="true">
+        {testJob && (
+          <PrintJobSlip job={testJob} restaurantName={restaurantName} />
+        )}
       </div>
     </div>
   );

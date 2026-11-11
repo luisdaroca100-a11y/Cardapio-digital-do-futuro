@@ -25,11 +25,13 @@ globalThis.window = {
 };
 
 const store = await import(new URL('../src/lib/store.ts', import.meta.url));
+const escpos = await import(new URL('../src/lib/escpos.ts', import.meta.url));
 const pageSrc = readFileSync(path.join(ROOT, 'src/app/page.tsx'), 'utf8');
 const admSrc = readFileSync(path.join(ROOT, 'src/app/adm/page.tsx'), 'utf8');
 const storeSrc = readFileSync(path.join(ROOT, 'src/lib/store.ts'), 'utf8');
 const sqlSrc = readFileSync(path.join(ROOT, 'supabase.sql'), 'utf8');
 const cssSrc = readFileSync(path.join(ROOT, 'src/app/globals.css'), 'utf8');
+const escposSrc = readFileSync(path.join(ROOT, 'src/lib/escpos.ts'), 'utf8');
 const mediaSrc = readFileSync(
   path.join(ROOT, 'src/lib/landing-media.ts'),
   'utf8',
@@ -1785,7 +1787,11 @@ section('22 · Sem tela de primeiro acesso');
     pageSrc.indexOf('async function enterOwnerArea'),
     pageSrc.indexOf('async function handleOwnerLogin'),
   );
-  has(enterOwnerSrc, "setView('owner')", 'enterOwnerArea vai pro painel');
+  has(
+    enterOwnerSrc,
+    "setView(isPrintCenterParam() ? 'print-center' : 'owner')",
+    'enterOwnerArea vai pro painel (ou pra central, no ?central=impressao)',
+  );
   notHas(enterOwnerSrc, "'setup'", 'enterOwnerArea sem setup');
 
   // Boot com sessão do dono restaurada também vai direto pro painel.
@@ -1795,7 +1801,11 @@ section('22 · Sem tela de primeiro acesso');
     ),
     pageSrc.indexOf('/** Login único do formulário principal'),
   );
-  has(bootSrc, "setView('owner')", 'boot do dono vai pro painel');
+  has(
+    bootSrc,
+    "setView(isPrintCenterParam() ? 'print-center' : 'owner')",
+    'boot do dono vai pro painel (ou pra central, no ?central=impressao)',
+  );
   // O 'setup' que resta no boot é o modo do acesso do admin (/adm),
   // não a tela de primeiro acesso: a restauração do dono não tem setup.
   const ownerBootSrc = bootSrc.slice(
@@ -2569,6 +2579,396 @@ section('27 · Tutorial do garçom (Parte 4)');
     cssSrc.includes('.tour-highlight') &&
       cssSrc.includes('@media (prefers-reduced-motion: reduce)'),
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* 28 · Impressão automática (cozinha, bar, balcão — 2 pontes)         */
+/* ------------------------------------------------------------------ */
+section('28 · Impressão automática (Parte 4 — impressoras)');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  const hasEsc = (s, name) => check(name, escposSrc.includes(s));
+
+  // --- ESC/POS: o cupom em bytes tem o mesmo conteúdo da via na tela.
+  const kitchenJob = {
+    sector: 'kitchen',
+    kind: 'send',
+    order_number: 42,
+    table_number: 5,
+    waiter_name: 'Carlos',
+    items: [
+      {
+        product_name: 'Casarão 1',
+        qty: 2,
+        price_cents: 15999,
+        description: 'arroz, feijão, 300g de filé de tilápia',
+        note: 'sem cebola',
+      },
+    ],
+    bill: null,
+    status: 'pending',
+    created_at: '2026-11-11T12:00:00.000Z',
+  };
+  const kitchenBytes = escpos.buildEscPosSlip(kitchenJob, 'Gosto Caseiro');
+  const kitchenText = escpos.decodeEscPosText(kitchenBytes);
+  check(
+    'ESC/POS: começa com inicializar (ESC @)',
+    kitchenBytes[0] === 0x1b && kitchenBytes[1] === 0x40,
+  );
+  check(
+    'ESC/POS: termina com corte (GS V 0)',
+    kitchenBytes[kitchenBytes.length - 1] === 0x00 &&
+      kitchenBytes[kitchenBytes.length - 2] === 0x56,
+  );
+  check(
+    'ESC/POS cozinha: nome, número, mesa, garçom e item',
+    kitchenText.includes('GOSTO CASEIRO') &&
+      kitchenText.includes('Pedido No 0042') &&
+      kitchenText.includes('Mesa: 5') &&
+      kitchenText.includes('Garcom: Carlos') &&
+      kitchenText.includes('Casarao 1'),
+  );
+  check(
+    'ESC/POS cozinha: descrição do prato e observação',
+    kitchenText.includes('arroz, feijao, 300g de file de tilapia') &&
+      kitchenText.includes('sem cebola') &&
+      kitchenText.includes('COZINHA'),
+  );
+  check(
+    'ESC/POS cozinha: rodapé "Pedido em preparo!"',
+    kitchenText.includes('Pedido em preparo!') &&
+      kitchenText.includes('Qualquer duvida, chame o garcom.'),
+  );
+  const barJob = {
+    sector: 'bar',
+    kind: 'send',
+    order_number: 43,
+    table_number: 5,
+    waiter_name: 'Ana',
+    items: [
+      {
+        product_name: 'Coca 600ml',
+        qty: 1,
+        price_cents: 899,
+        serve: 'copo com limão e gelo',
+      },
+    ],
+    bill: null,
+    status: 'pending',
+    created_at: '2026-11-11T12:05:00.000Z',
+  };
+  const barText = escpos.decodeEscPosText(
+    escpos.buildEscPosSlip(barJob, 'Gosto Caseiro'),
+  );
+  check(
+    'ESC/POS bar: como servir e faixa BAR (sem COZINHA)',
+    barText.includes('copo com limao e gelo') &&
+      barText.includes('BAR') &&
+      !barText.includes('COZINHA'),
+  );
+  const billJob = {
+    sector: 'counter',
+    kind: 'close',
+    order_number: 44,
+    table_number: 5,
+    waiter_name: 'Carlos',
+    items: [
+      { product_name: 'Casarão 1', qty: 1, price_cents: 15999 },
+      { product_name: 'Coca 600ml', qty: 2, price_cents: 899 },
+    ],
+    bill: { subtotal_cents: 17797, fee_cents: 534, total_cents: 18331 },
+    status: 'pending',
+    created_at: '2026-11-11T12:30:00.000Z',
+  };
+  const billText = escpos.decodeEscPosText(
+    escpos.buildEscPosSlip(billJob, 'Gosto Caseiro'),
+  );
+  check(
+    'ESC/POS conta: subtotal, taxa, TOTAL e agradecimento',
+    billText.includes('Subtotal') &&
+      billText.includes('Taxa de servico') &&
+      billText.includes('TOTAL') &&
+      billText.includes('R$ 183,31') &&
+      billText.includes('Obrigado pela preferencia!') &&
+      billText.includes('CONTA'),
+  );
+  check(
+    'ESC/POS: só ASCII (acentos removidos, sem byte >= 0x80)',
+    [...kitchenBytes].every((b) => b < 0x80),
+  );
+  check(
+    'ESC/POS: quebra de linha respeita 42 colunas',
+    escpos
+      .escposWrap('arroz feijão batata salada farofa vinagrete', 42)
+      .every((l) => l.length <= 42),
+  );
+  check(
+    'ESC/POS: lados cabem nas 42 colunas',
+    escpos.escposSides('Subtotal', 'R$ 177,97').length === 42,
+  );
+  check(
+    'ESC/POS: cupom de teste existe pros 3 setores',
+    ['kitchen', 'bar', 'counter'].every((s) => {
+      const t = escpos.decodeEscPosText(
+        escpos.buildEscPosTestSlip('Gosto Caseiro', s),
+      );
+      return t.includes(escpos.sectorLabel(s));
+    }),
+  );
+  check(
+    'ESC/POS: rótulos dos setores',
+    escpos.sectorLabel('kitchen') === 'COZINHA' &&
+      escpos.sectorLabel('bar') === 'BAR' &&
+      escpos.sectorLabel('counter') === 'CONTA',
+  );
+  hasEsc('export const ESCPOS_COLS = 42', 'ESC/POS: papel 80mm, 42 colunas');
+
+  // --- Store (modo local): configuração e fila por restaurante.
+  const allRestaurants = await store.listRestaurants();
+  const rid28 = allRestaurants[0]?.id ?? '';
+  store.setActiveRestaurant(rid28);
+  check(
+    'impressoras: nenhuma cadastrada no início',
+    (await store.getPrinterConfig()).length === 0,
+  );
+  const feeBefore = (await store.getSettings()).service_fee_pct;
+  await store.savePrinterConfig([
+    {
+      sector: 'kitchen',
+      name: 'Bematech cozinha',
+      connection: 'usb',
+      bridge: 'computer',
+      enabled: true,
+    },
+    {
+      sector: 'bar',
+      name: 'Elgin bar',
+      connection: 'bluetooth',
+      bridge: 'phone',
+      enabled: true,
+    },
+    {
+      sector: 'counter',
+      name: 'Daruma balcão',
+      connection: 'wifi',
+      bridge: 'computer',
+      enabled: true,
+    },
+  ]);
+  const cfg28 = await store.getPrinterConfig();
+  check(
+    'impressoras: 3 setores salvos com ponte e ligação',
+    cfg28.length === 3 &&
+      cfg28.find((p) => p.sector === 'kitchen')?.bridge === 'computer' &&
+      cfg28.find((p) => p.sector === 'bar')?.bridge === 'phone' &&
+      cfg28.find((p) => p.sector === 'counter')?.connection === 'wifi',
+  );
+  check(
+    'impressoras: salvar não muda os outros ajustes',
+    (await store.getSettings()).service_fee_pct === feeBefore,
+  );
+  const enqueued = await store.enqueuePrintJobs([
+    {
+      sector: 'kitchen',
+      kind: 'send',
+      order_number: 42,
+      table_number: 5,
+      waiter_name: 'Carlos',
+      items: kitchenJob.items,
+      bill: null,
+    },
+    {
+      sector: 'bar',
+      kind: 'send',
+      order_number: 42,
+      table_number: 5,
+      waiter_name: 'Carlos',
+      items: barJob.items,
+      bill: null,
+    },
+    {
+      sector: 'counter',
+      kind: 'close',
+      order_number: 44,
+      table_number: 5,
+      waiter_name: 'Carlos',
+      items: billJob.items,
+      bill: billJob.bill,
+    },
+  ]);
+  check('fila: 3 vias enfileiradas como pendentes', enqueued.length === 3);
+  const pending28 = await store.listPrintJobs('pending');
+  check(
+    'fila: pendentes em ordem de chegada (cozinha, bar, balcão)',
+    pending28.length === 3 &&
+      pending28[0].sector === 'kitchen' &&
+      pending28[1].sector === 'bar' &&
+      pending28[2].sector === 'counter',
+  );
+  await store.markPrintJobPrinted(pending28[0].id, 'computer');
+  const afterPrint = await store.listPrintJobs('pending');
+  check(
+    'fila: impressa sai da pendência (marcada computador)',
+    afterPrint.length === 2 &&
+      (await store.listPrintJobs()).find((j) => j.id === pending28[0].id)
+        ?.status === 'printed',
+  );
+  await store.markPrintJobFailed(afterPrint[0].id);
+  check(
+    'fila: falha fica na fila como failed (nada some)',
+    (await store.listPrintJobs()).find((j) => j.id === afterPrint[0].id)
+      ?.status === 'failed',
+  );
+  await store.retryPrintJob(afterPrint[0].id);
+  check(
+    'fila: tentar de novo volta a via pra pendente',
+    (await store.listPrintJobs('pending')).some(
+      (j) => j.id === afterPrint[0].id,
+    ),
+  );
+  check(
+    'fila: assinatura em tempo real existe (modo local: sem efeito)',
+    typeof store.subscribePrintJobs(() => {}) === 'function',
+  );
+  // Isolamento por restaurante: a fila de um não aparece no outro.
+  if (allRestaurants.length > 1) {
+    store.setActiveRestaurant(allRestaurants[1].id);
+    check(
+      'fila: outro restaurante não vê as vias deste',
+      (await store.listPrintJobs()).length === 0,
+    );
+    check(
+      'impressoras: outro restaurante não vê a config deste',
+      (await store.getPrinterConfig()).length === 0,
+    );
+    store.setActiveRestaurant(rid28);
+  }
+
+  // --- Página: área Impressoras no painel do dono (Ajustes).
+  has(pageSrc, 'Impressoras', 'área Impressoras no painel do dono');
+  has(pageSrc, 'PRINT_SECTORS', '3 setores de impressora (cozinha, bar, balcão)');
+  has(
+    pageSrc,
+    "sector: 'kitchen'",
+    'setor cozinha na configuração',
+  );
+  has(
+    pageSrc,
+    "Computador do balcão",
+    'ponte: computador do balcão',
+  );
+  has(pageSrc, 'Celular na central', 'ponte: celular na central');
+  has(pageSrc, 'Bluetooth', 'ligação Bluetooth oferecida');
+  has(pageSrc, 'Wi-Fi ou rede', 'ligação Wi-Fi/rede oferecida');
+  has(pageSrc, 'Testar', 'botão Testar por setor');
+  has(
+    pageSrc,
+    'Abrir central de impressão',
+    'botão Abrir central de impressão',
+  );
+  has(
+    pageSrc,
+    'Impressão automática ligada',
+    'liga/desliga a impressão automática por setor',
+  );
+
+  // --- Central de impressão: as duas pontes.
+  has(pageSrc, 'print-center', 'view central de impressão existe');
+  has(
+    pageSrc,
+    "if (view === 'print-center' && ownerSession)",
+    'central abre na área do dono',
+  );
+  has(pageSrc, 'isPrintCenterParam', 'endereço ?central=impressao');
+  has(
+    pageSrc,
+    "q.get('central') === 'impressao'",
+    'parâmetro ?central=impressao',
+  );
+  has(
+    pageSrc,
+    'PrintCenterView',
+    'componente da central de impressão',
+  );
+  has(
+    pageSrc,
+    'setInterval',
+    'central escuta a fila com polling de reserva',
+  );
+  has(
+    pageSrc,
+    'subscribePrintJobs',
+    'central assina a fila em tempo real',
+  );
+  has(pageSrc, 'window.print()', 'caminho computador: impressão do navegador');
+  has(pageSrc, 'print-area', 'área de impressão do computador (#print-area)');
+  has(
+    pageSrc,
+    'navigator',
+    'caminho celular: Web Bluetooth',
+  );
+  has(pageSrc, 'requestDevice', 'caminho celular: pede a impressora Bluetooth');
+  has(
+    pageSrc,
+    '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
+    'caminho celular: serviço UART das térmicas Bluetooth',
+  );
+  has(
+    pageSrc,
+    'writeValueWithoutResponse',
+    'caminho celular: escreve os bytes ESC/POS',
+  );
+  has(pageSrc, 'Modo simulação', 'modo simulação sem hardware');
+  has(
+    pageSrc,
+    'central_simulacao_v1',
+    'modo simulação lembrado no aparelho',
+  );
+  has(pageSrc, 'Fila de impressão', 'fila visível na central');
+  has(pageSrc, 'Imprimir agora', 'impressão manual por via');
+  has(pageSrc, 'Tentar de novo', 'via com falha volta pra fila');
+  has(pageSrc, 'Reimprimir', 'via impressa pode ser reimpressa');
+  has(pageSrc, 'PrintJobSlip', 'cupom da fila com o mesmo conteúdo da via');
+  has(
+    pageSrc,
+    'enqueuePrintJobsForTicket',
+    'envio e fechamento enfileiram as vias',
+  );
+  has(
+    pageSrc,
+    'sector: \'counter\'',
+    'conta do balcão vai pra impressora do balcão',
+  );
+  has(
+    pageSrc,
+    '--kiosk-printing',
+    'central explica o modo silencioso do Chrome',
+  );
+
+  // --- CSS de impressão + banco.
+  has(cssSrc, '#print-area', 'CSS: área de impressão fora da tela');
+  has(cssSrc, '@media print', 'CSS: só a via sai no papel');
+  has(cssSrc, '.printer-card', 'CSS: cartão da impressora');
+  has(cssSrc, '.print-job', 'CSS: via na fila');
+  has(cssSrc, '.print-sim-banner', 'CSS: faixa do modo simulação');
+  has(sqlSrc, 'create table if not exists public.print_jobs', 'SQL: tabela print_jobs');
+  has(sqlSrc, 'add column if not exists printers jsonb', 'SQL: coluna printers em settings');
+  has(
+    sqlSrc,
+    'garcom_all_print_jobs',
+    'SQL: policy da fila de impressão',
+  );
+  has(
+    sqlSrc,
+    'supabase_realtime add table public.print_jobs',
+    'SQL: fila no Realtime',
+  );
+  has(storeSrc, 'enqueuePrintJobs', 'store: enqueuePrintJobs');
+  has(storeSrc, 'markPrintJobPrinted', 'store: markPrintJobPrinted');
+  has(storeSrc, 'markPrintJobFailed', 'store: markPrintJobFailed');
+  has(storeSrc, 'retryPrintJob', 'store: retryPrintJob');
+  has(storeSrc, 'getPrinterConfig', 'store: getPrinterConfig');
+  has(storeSrc, 'savePrinterConfig', 'store: savePrinterConfig');
 }
 
 console.log(`\n========================================`);

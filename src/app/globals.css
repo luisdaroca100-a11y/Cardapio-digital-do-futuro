@@ -2221,3 +2221,136 @@ select {
     animation: none;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Impressoras térmicas — Ajustes do dono + central de impressão       */
+/* ------------------------------------------------------------------ */
+
+.printer-card {
+  border: 1px solid #e5e0d8;
+  border-radius: 10px;
+  padding: 12px;
+  margin: 12px 0;
+  background: #fffdf8;
+}
+
+.printer-card > strong {
+  display: block;
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+.printer-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid #e5e0d8;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  background: #fffdf8;
+}
+
+.print-badge {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #e7f6e3;
+  color: #2f7a2e;
+}
+
+.print-badge-pending {
+  background: #fdeeda;
+  color: #9a6700;
+}
+
+.print-job {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid #e5e0d8;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  background: #fff;
+}
+
+.print-job-failed {
+  border-color: #e5b4b4;
+  background: #fff7f7;
+}
+
+.print-job-done {
+  background: #fbfaf7;
+}
+
+.print-job-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.print-job-btns .btn {
+  white-space: nowrap;
+}
+
+.print-sim-banner {
+  background: #fff3cd;
+  border: 1px solid #e6c87a;
+  color: #6d4c00;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+
+.print-center-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px 0;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.print-center-head-btns {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Área de impressão do computador: fora da tela, só aparece no papel.
+   A via usa as mesmas classes .ticket da tela. */
+#print-area {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  width: 72mm;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #print-area,
+  #print-area * {
+    visibility: visible;
+  }
+  #print-area {
+    position: static;
+    left: auto;
+    width: 72mm;
+    margin: 0;
+  }
+  #print-area .ticket {
+    max-width: 72mm;
+    margin: 0;
+    border: none;
+  }
+}
