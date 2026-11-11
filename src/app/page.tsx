@@ -28,7 +28,6 @@ import type {
 
 type View =
   | 'home'
-  | 'setup'
   | 'login'
   | 'register'
   | 'register-success'
@@ -319,8 +318,10 @@ function GarcomApp() {
         // dono ou de administrador não é restaurada nesse endereço.
         const onlyWaiter = isWaiterOnlyParam();
         setWaiterOnly(onlyWaiter);
-        setHasAdmin((await store.getPlatformAdmin()) !== null);
         if (!onlyWaiter) {
+          // A consulta do administrador só roda fora do QR: no endereço
+          // do QR, o login do garçom não depende de nada do banco.
+          setHasAdmin((await store.getPlatformAdmin()) !== null);
           // Sessão do administrador da plataforma tem prioridade: ele não
           // é garçom nem dono de nenhum restaurante.
           const rawAdmin = safeGet(PLATFORM_ADMIN_SESSION_KEY);
@@ -358,10 +359,10 @@ function GarcomApp() {
                   restaurant_id: rid,
                 });
                 await refreshOwner();
-                // Restaurante novo, sem garçom ainda: primeiro acesso
-                // (criar o primeiro garçom + cardápio).
-                const ws = await store.listWaiters();
-                setView(ws.length === 0 ? 'setup' : 'owner');
+                // O dono cai direto no painel dele (Financeiro), mesmo
+                // com 0 garçons — garçons e cardápio são cadastrados
+                // nas abas certas, lá dentro.
+                setView('owner');
                 return;
               }
             } catch {
@@ -400,9 +401,13 @@ function GarcomApp() {
         // resto começa na apresentação.
         setView(onlyWaiter ? 'login' : 'home');
       } catch (e) {
-        setError(
-          e instanceof Error ? e.message : 'Não foi possível carregar o sistema.',
-        );
+        // No endereço do QR, nunca mostrar a tela de erro: qualquer
+        // falha no boot cai direto no login do garçom, sem mensagem.
+        if (!isWaiterOnlyParam()) {
+          setError(
+            e instanceof Error ? e.message : 'Não foi possível carregar o sistema.',
+          );
+        }
         setView('login');
       } finally {
         setBooting(false);
@@ -487,9 +492,9 @@ function GarcomApp() {
     safeSet(OWNER_SESSION_KEY, JSON.stringify(s));
     setOwnerAuth(false);
     await refreshOwner();
-    // Restaurante novo, sem garçom ainda: primeiro acesso.
-    const ws = await store.listWaiters();
-    setView(ws.length === 0 ? 'setup' : 'owner');
+    // O dono cai direto no painel dele (Financeiro), mesmo com 0
+    // garçons — garçons e cardápio são cadastrados nas abas certas.
+    setView('owner');
   }
 
   async function handleOwnerLogin(login: string, password: string) {
@@ -1088,19 +1093,6 @@ function GarcomApp() {
   }
 
   /* ------------------------------ SETUP ------------------------------ */
-
-  if (view === 'setup') {
-    return (
-      <SetupView
-        products={products}
-        onProductsChanged={refresh}
-        onDone={() => {
-          // Dono recém-cadastrado volta pra área dele; garçom vai pro login.
-          setView(ownerSession ? 'owner' : 'login');
-        }}
-      />
-    );
-  }
 
   /* ------------------------------ CADASTRO DO RESTAURANTE ------------------------------ */
 
@@ -2250,146 +2242,7 @@ function LoginForm({
 }
 
 /* ------------------------------------------------------------------ */
-/* Primeiro acesso: cria o acesso do garçom e cadastra o cardápio.    */
-/* Só aparece quando o sistema está vazio.                             */
-/* ------------------------------------------------------------------ */
-
-function SetupView({
-  products,
-  onProductsChanged,
-  onDone,
-}: {
-  products: Product[];
-  onProductsChanged: () => Promise<void>;
-  onDone: () => void;
-}) {
-  const [name, setName] = useState('');
-  const [login, setLogin] = useState('');
-  const [password, setPassword] = useState('');
-  const [accessCreated, setAccessCreated] = useState(false);
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  async function createAccess() {
-    setError('');
-    if (!name.trim() || !login.trim()) {
-      setError('Preencha o nome e o login do garçom.');
-      return;
-    }
-    if (password.length < 4) {
-      setError('A senha precisa ter no mínimo 4 caracteres.');
-      return;
-    }
-    setBusy(true);
-    try {
-      const hash = await store.hashPassword(password);
-      await store.createWaiter(name.trim(), login.trim(), hash);
-      setAccessCreated(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Não foi possível criar o acesso.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="app">
-      <div className="hero">
-        <h1>Sistema do Garçom</h1>
-        <p>Primeiro acesso — configure o sistema uma única vez.</p>
-      </div>
-      <div className="content">
-        {error && <div className="error">{error}</div>}
-
-        <div className="card">
-          <h2>1 · Criar acesso</h2>
-          <p className="hint">
-            Crie o acesso do garçom. Depois, o dono cria os acessos dos outros
-            garçons no sistema dele e só passa o login e a senha.
-          </p>
-          {accessCreated ? (
-            <div className="ok-note">
-              Acesso criado para <strong>{name.trim()}</strong> (login:{' '}
-              <strong>{login.trim()}</strong>).
-            </div>
-          ) : (
-            <>
-              <div className="field">
-                <label htmlFor="setup-name">Nome do garçom</label>
-                <input
-                  id="setup-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Ex.: Carlos"
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="setup-login">Login</label>
-                <input
-                  id="setup-login"
-                  autoComplete="username"
-                  value={login}
-                  onChange={(e) => setLogin(e.target.value)}
-                  placeholder="Ex.: carlos"
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="setup-password">Senha (mínimo 4 caracteres)</label>
-                <input
-                  id="setup-password"
-                  type="password"
-                  autoComplete="new-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Crie uma senha"
-                />
-              </div>
-              <button
-                className="btn btn-purple"
-                disabled={busy}
-                onClick={createAccess}
-              >
-                Criar acesso
-              </button>
-            </>
-          )}
-        </div>
-
-        <div className="card">
-          <h2>2 · Cardápio</h2>
-          <p className="hint">
-            Cada produto sai numa impressora: pratos na cozinha, bebidas no
-            bar.
-          </p>
-          <ProductForm
-            products={products}
-            onAdded={onProductsChanged}
-            disabled={!accessCreated}
-          />
-          {products.length > 0 && (
-            <ProductListGrouped products={products} onDeleted={onProductsChanged} />
-          )}
-        </div>
-
-        <button
-          className="btn btn-green"
-          disabled={!accessCreated || products.length === 0}
-          onClick={onDone}
-        >
-          Ir para o login
-        </button>
-        {accessCreated && products.length === 0 && (
-          <p className="hint" style={{ textAlign: 'center', marginTop: 10 }}>
-            Cadastre ao menos 1 produto para continuar.
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* Cadastro de produto (usado no primeiro acesso e em Ajustes)         */
+/* Cadastro de produto (usado na área do dono)                          */
 /* ------------------------------------------------------------------ */
 
 function ProductForm({
@@ -4487,7 +4340,9 @@ function OwnerWaitersView({
         const svg = await QRCode.toString(qrUrl, {
           type: 'svg',
           width: 208,
-          margin: 1,
+          // Margem 4 = zona de silêncio do padrão QR: com margem 1 a
+          // câmera tinha dificuldade pra ler o código.
+          margin: 4,
         });
         if (alive) setQrSvg(svg);
       } catch {

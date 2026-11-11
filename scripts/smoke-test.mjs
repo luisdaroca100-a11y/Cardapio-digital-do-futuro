@@ -1228,8 +1228,9 @@ section('18 · Cadastro realizado com sucesso');
     pageSrc.includes('initialLogin={registeredLogin}'),
   );
   check(
-    'primeiro acesso (setup) continua só depois do login do dono',
-    pageSrc.includes("setView(ws.length === 0 ? 'setup' : 'owner')"),
+    'login do dono cai direto no painel (sem tela de primeiro acesso)',
+    !pageSrc.includes("setView(ws.length === 0 ? 'setup' : 'owner')") &&
+      !pageSrc.includes("setView('setup')"),
   );
 }
 
@@ -1721,6 +1722,215 @@ section('21 · Port do artefato');
   check(
     'vias: sem "✓ Pedido em preparo!" (só "Pedido em preparo!")',
     !pageSrc.includes('✓ Pedido em preparo!'),
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 22 · Sem tela de primeiro acesso: dono cai direto no Financeiro     */
+/* ------------------------------------------------------------------ */
+section('22 · Sem tela de primeiro acesso');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  const notHas = (src, s, name) => check(name, !src.includes(s));
+
+  // Estático: nenhum caminho leva mais à tela de primeiro acesso.
+  notHas(pageSrc, "setView('setup')", 'nenhum setView para setup');
+  notHas(pageSrc, "view === 'setup'", 'nenhuma branch de view setup');
+  notHas(pageSrc, 'function SetupView', 'componente SetupView removido');
+  notHas(
+    pageSrc,
+    "ws.length === 0 ? 'setup' : 'owner'",
+    'sem desvio por nº de garçons',
+  );
+  notHas(
+    pageSrc,
+    'Primeiro acesso — configure o sistema uma única vez.',
+    'texto do primeiro acesso removido',
+  );
+  notHas(
+    pageSrc,
+    'Cadastre ao menos 1 produto para continuar.',
+    'trava do primeiro acesso removida',
+  );
+
+  // enterOwnerArea vai direto pro painel do dono.
+  const enterOwnerSrc = pageSrc.slice(
+    pageSrc.indexOf('async function enterOwnerArea'),
+    pageSrc.indexOf('async function handleOwnerLogin'),
+  );
+  has(enterOwnerSrc, "setView('owner')", 'enterOwnerArea vai pro painel');
+  notHas(enterOwnerSrc, "'setup'", 'enterOwnerArea sem setup');
+
+  // Boot com sessão do dono restaurada também vai direto pro painel.
+  const bootSrc = pageSrc.slice(
+    pageSrc.indexOf(
+      '// QR Code dos garçons (?acesso=garcom ou ?tela=garcom): pula a',
+    ),
+    pageSrc.indexOf('/** Login único do formulário principal'),
+  );
+  has(bootSrc, "setView('owner')", 'boot do dono vai pro painel');
+  notHas(bootSrc, "'setup'", 'boot do dono sem setup');
+
+  // Abas do painel funcionam com 0 itens (botão + estado vazio).
+  has(pageSrc, 'Novo garçom', 'aba Garçons tem "Novo garçom"');
+  has(
+    pageSrc,
+    'Nenhum garçom cadastrado.',
+    'aba Garçons tem estado vazio',
+  );
+  has(pageSrc, 'Novo produto', 'aba Cardápio tem "Novo produto"');
+  has(
+    pageSrc,
+    'O cardápio está vazio.',
+    'aba Cardápio tem estado vazio',
+  );
+  has(pageSrc, "tab === 'waiters'", 'painel tem aba Garçons');
+  has(pageSrc, "tab === 'menu'", 'painel tem aba Cardápio');
+
+  // Funcional (modo local): restaurante novo com 0 garçons e 0 produtos
+  // — o dono entra mesmo assim e cadastra garçom e produto pelas abas.
+  const hashVazio = await store.hashPassword('senha-vazio-123');
+  await store.registerRestaurant({
+    restaurantName: 'Teste Vazio',
+    ownerName: 'Dono Vazio',
+    login: 'dono-vazio',
+    passwordHash: hashVazio,
+  });
+  check(
+    'restaurante novo começa com 0 garçons',
+    (await store.listWaiters()).length === 0,
+  );
+  check(
+    'restaurante novo começa com 0 produtos',
+    (await store.listProducts()).length === 0,
+  );
+  const authVazio = await store.authenticate('dono-vazio', 'senha-vazio-123');
+  check(
+    'login do dono com 0 garçons entra como dono',
+    authVazio !== null && authVazio.kind === 'owner',
+  );
+  const wVazio = await store.createWaiter(
+    'Carlos Vazio',
+    'garcom-vazio',
+    await store.hashPassword('senha-garcom-123'),
+    8,
+  );
+  check(
+    'criar garçom pela aba Garçons funciona com 0 itens',
+    wVazio.login === 'garcom-vazio' &&
+      (await store.listWaiters()).length === 1,
+  );
+  const pVazio = await store.createProduct({
+    name: 'Prato Vazio',
+    price_cents: 3290,
+    category: 'Almoço',
+    prints_in: 'kitchen',
+  });
+  check(
+    'criar produto pela aba Cardápio funciona com 0 itens',
+    pVazio.name === 'Prato Vazio' &&
+      (await store.listProducts()).length === 1,
+  );
+  const authGarcomVazio = await store.authenticate(
+    'garcom-vazio',
+    'senha-garcom-123',
+  );
+  check(
+    'garçom criado entra no login',
+    authGarcomVazio !== null && authGarcomVazio.kind === 'waiter',
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 23 · QR Code dos garçons: leitura e boot sem erro                   */
+/* ------------------------------------------------------------------ */
+section('23 · QR Code dos garçons');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  const notHas = (src, s, name) => check(name, !src.includes(s));
+
+  // O endereço codificado no QR é o login do garçom.
+  check(
+    'waiterLoginUrl monta o endereço com ?acesso=garcom',
+    store.waiterLoginUrl('https://cardapio-digital-do-futuro.vercel.app') ===
+      'https://cardapio-digital-do-futuro.vercel.app/?acesso=garcom',
+  );
+  check(
+    'waiterLoginUrl tolera barra no fim da origem',
+    store.waiterLoginUrl('https://cardapio-digital-do-futuro.vercel.app/') ===
+      'https://cardapio-digital-do-futuro.vercel.app/?acesso=garcom',
+  );
+
+  // Geração do QR: margem 4 (zona de silêncio do padrão) e SVG 208px.
+  const qrGenSrc = pageSrc.slice(
+    pageSrc.indexOf('QRCode.toString(qrUrl'),
+    pageSrc.indexOf('}, [qrUrl])'),
+  );
+  has(qrGenSrc, 'margin: 4', 'QR com margem 4 (zona de silêncio)');
+  notHas(qrGenSrc, 'margin: 1', 'QR sem margem 1');
+  has(qrGenSrc, "type: 'svg'", 'QR em SVG');
+  has(qrGenSrc, 'width: 208', 'QR com 208px');
+  has(pageSrc, 'QR Code dos garçons', 'seção do QR na aba Garçons');
+  has(
+    pageSrc,
+    'dangerouslySetInnerHTML={{ __html: qrSvg }}',
+    'QR renderizado como SVG inline',
+  );
+
+  // O parâmetro é aceito nas duas formas e o estado inicial já cai no login.
+  has(
+    pageSrc,
+    "q.get('acesso') === 'garcom'",
+    'parâmetro ?acesso=garcom aceito',
+  );
+  has(
+    pageSrc,
+    "q.get('tela') === 'garcom'",
+    'parâmetro ?tela=garcom aceito',
+  );
+  has(
+    pageSrc,
+    'useState(() => isWaiterOnlyParam())',
+    'modo garçom decidido no primeiro render',
+  );
+  has(
+    pageSrc,
+    "isWaiterOnlyParam() ? 'login' : 'home'",
+    'QR abre direto no login',
+  );
+  has(
+    pageSrc,
+    '{!waiterOnly && (',
+    'login do QR esconde links de dono/cadastro/admin',
+  );
+  has(
+    pageSrc,
+    "if (waiterOnly) throw new Error('Não foi possível entrar. Tente de novo.');",
+    'login de dono recusado na tela do QR',
+  );
+
+  // Boot no endereço do QR nunca mostra a tela de erro: a consulta do
+  // administrador não roda nesse modo e o catch não mostra mensagem.
+  const bootSrc = pageSrc.slice(
+    pageSrc.indexOf(
+      '// QR Code dos garçons (?acesso=garcom ou ?tela=garcom): pula a',
+    ),
+    pageSrc.indexOf('/** Login único do formulário principal'),
+  );
+  check(
+    'boot no QR não consulta o administrador antes de decidir a tela',
+    bootSrc.indexOf('if (!onlyWaiter)') <
+      bootSrc.indexOf('setHasAdmin((await store.getPlatformAdmin())'),
+  );
+  has(
+    bootSrc,
+    'if (!isWaiterOnlyParam()) {',
+    'catch do boot só mostra erro fora do QR',
+  );
+  has(
+    bootSrc,
+    "setView(onlyWaiter ? 'login' : 'home')",
+    'boot sem sessão no QR cai no login do garçom',
   );
 }
 
