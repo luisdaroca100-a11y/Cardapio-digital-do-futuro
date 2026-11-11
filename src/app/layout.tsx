@@ -2,9 +2,9 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Sistema do Garçom',
+  title: 'ComandaJá',
   description:
-    'Mesas, pedidos, cozinha, bar e balcão — sistema do garçom para restaurantes.',
+    'Mesas, pedidos, cozinha, bar e balcão — ComandaJá para restaurantes.',
 };
 
 export const viewport: Viewport = {

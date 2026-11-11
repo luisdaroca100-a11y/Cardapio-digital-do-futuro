@@ -1741,7 +1741,7 @@ function GarcomApp() {
         ) : adminAuth ? (
           <>
             <div className="hero">
-              <h1>Sistema do Garçom</h1>
+              <h1>ComandaJá</h1>
               <p>Entre com o seu acesso para abrir as mesas.</p>
             </div>
             <div className="content auth">
@@ -4350,7 +4350,7 @@ function HomeView({
   return (
     <div className="app landing">
       <div className="landing-header">
-        <strong>Sistema de Restaurante</strong>
+        <strong>ComandaJá</strong>
         <nav className="landing-nav" aria-label="Menu">
           <a href="#como-funciona">Como funciona</a>
           <a href="#pro-garcom">Pro garçom</a>

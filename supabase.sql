@@ -1,5 +1,5 @@
 -- ============================================================
--- Sistema do Garçom — schema do Supabase (plataforma multi-restaurante)
+-- ComandaJá — schema do Supabase (plataforma multi-restaurante)
 -- Rode este arquivo inteiro no SQL Editor do Supabase
 -- (Dashboard do projeto → SQL Editor → New query → colar → Run).
 -- Pode rodar de novo sem erro: tudo usa "if not exists" e as

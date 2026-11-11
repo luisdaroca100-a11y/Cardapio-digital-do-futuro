@@ -1,5 +1,5 @@
 /**
- * Smoke tests do Sistema do Garçom (garçom + dono/financeiro).
+ * Smoke tests do ComandaJá (garçom + dono/financeiro).
  *
  * Roda em Node (sem navegador): o store roda em modo local com um
  * localStorage em memória; a página é verificada por build + HTTP +
@@ -407,7 +407,7 @@ section('8 · Fonte: área do dono');
   has(pageSrc, 'kind: \'send\',', 'envio: modal do pedido é kind send');
   has(pageSrc, '{data.bill && (', 'fechamento: via do balcão (CONTA) aparece');
   // Fluxo do garçom intacto.
-  has(pageSrc, 'Sistema do Garçom', 'fluxo do garçom: título intacto');
+  has(pageSrc, 'ComandaJá', 'marca: ComandaJá no título de login');
   has(pageSrc, 'Fechar mesa', 'fluxo do garçom: fechar mesa intacto');
   has(pageSrc, 'Enviar pedido', 'fluxo do garçom: enviar intacto');
   has(pageSrc, 'REVISAR', 'fluxo do garçom: revisar intacto');
@@ -1364,9 +1364,13 @@ section('20 · Landing escura igual à da versão de teste');
     homeSrc.includes('Sistema completo para restaurantes:'),
   );
   check(
-    'cabeçalho "Sistema de Restaurante" com botão de cadastro',
-    homeSrc.includes('Sistema de Restaurante') &&
+    'cabeçalho "ComandaJá" com botão de cadastro',
+    homeSrc.includes('ComandaJá') &&
       homeSrc.includes('landing-header'),
+  );
+  check(
+    'nome antigo "Sistema de Restaurante" removido do cabeçalho',
+    !homeSrc.includes('Sistema de Restaurante'),
   );
   check(
     'botão "Ver como funciona" rola até a seção',
