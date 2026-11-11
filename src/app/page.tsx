@@ -73,6 +73,8 @@ interface TicketData {
   orderNumber?: number;
   /** hora do envio — só kind 'send' */
   sentAt?: string;
+  /** nome do garçom que fez o pedido — vias da cozinha e do bar */
+  waiterName?: string;
 }
 
 /**
@@ -437,6 +439,7 @@ function GarcomApp() {
         bill: null,
         orderNumber,
         sentAt,
+        waiterName: currentOrder.order.waiter_name,
       });
       await refreshCurrentOrder(currentOrder.order.id);
     } catch (e) {
@@ -1643,7 +1646,8 @@ function TicketsModal({
             </div>
             <div className="t-meta">
               Mesa: {data.tableNumber} | Hora:{' '}
-              {data.sentAt ? formatTime(data.sentAt) : ''}
+              {data.sentAt ? formatTime(data.sentAt) : ''} | Garçom:{' '}
+              {data.waiterName ?? ''}
             </div>
             <div className="t-band">👨‍🍳&nbsp; COZINHA</div>
             <div className="t-cols">
@@ -1694,7 +1698,8 @@ function TicketsModal({
             </div>
             <div className="t-meta">
               Mesa: {data.tableNumber} | Hora:{' '}
-              {data.sentAt ? formatTime(data.sentAt) : ''}
+              {data.sentAt ? formatTime(data.sentAt) : ''} | Garçom:{' '}
+              {data.waiterName ?? ''}
             </div>
             <div className="t-band">🥤&nbsp; BAR</div>
             <div className="t-cols">
