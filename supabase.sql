@@ -63,6 +63,8 @@ alter table public.products
 -- order_seq: contador do número do pedido ("Pedido Nº 0001"), sequencial.
 -- default_commission_pct: % de comissão padrão dos garçons (vale pros
 -- novos garçons; cada um pode ter a sua própria %).
+-- day_closed_date: data (AAAA-MM-DD) em que o dono finalizou o dia;
+-- null = dia aberto. O dia reabre sozinho às 9h da manhã seguinte.
 create table if not exists public.settings (
   id integer primary key,
   service_fee_pct numeric not null default 3
@@ -71,7 +73,8 @@ create table if not exists public.settings (
     check (table_count >= 1 and table_count <= 100),
   order_seq integer not null default 0,
   default_commission_pct numeric not null default 8
-    check (default_commission_pct >= 0 and default_commission_pct <= 100)
+    check (default_commission_pct >= 0 and default_commission_pct <= 100),
+  day_closed_date text
 );
 
 -- Para bancos criados com a versão anterior do schema (sem as colunas):
@@ -80,6 +83,8 @@ alter table public.settings
 alter table public.settings
   add column if not exists default_commission_pct numeric not null default 8
     check (default_commission_pct >= 0 and default_commission_pct <= 100);
+alter table public.settings
+  add column if not exists day_closed_date text;
 
 -- Próximo número do pedido — incremento atômico (dois garçons
 -- enviando ao mesmo tempo não pegam o mesmo número).

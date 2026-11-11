@@ -359,9 +359,153 @@ section('8 · Fonte: área do dono');
 }
 
 /* ------------------------------------------------------------------ */
-/* 9 · Build + HTTP                                                    */
+/* 9 · Finalizar dia: trava, reabertura automática às 9h e acerto     */
 /* ------------------------------------------------------------------ */
-section('9 · Build + HTTP');
+section('9 · Finalizar dia');
+{
+  const s0 = await store.getSettings();
+  check('dia aberto no início (sem data)', s0.day_closed_date == null);
+  check('isDayClosed false com dia aberto', store.isDayClosed(s0) === false);
+
+  // Data local de hoje no formato AAAA-MM-DD.
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  const d = now.getDate();
+  const todayStr = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  check('localDateString devolve hoje', store.localDateString(now) === todayStr);
+
+  // Finalizar o dia grava a data de hoje.
+  const fin = await store.finalizeDay();
+  check('finalizeDay grava a data de hoje', fin.day_closed_date === todayStr);
+  const s1 = await store.getSettings();
+  check('data do fechamento persiste no banco', s1.day_closed_date === todayStr);
+  check('dia fechado logo após finalizar', store.isDayClosed(s1) === true);
+  check(
+    'dia fechado ainda hoje às 23:30',
+    store.isDayClosed(s1, new Date(y, m, d, 23, 30)) === true,
+  );
+  check(
+    'dia fechado no dia seguinte às 8h (antes das 9h)',
+    store.isDayClosed(s1, new Date(y, m, d + 1, 8, 0)) === true,
+  );
+  check(
+    'dia fechado no dia seguinte às 8:59',
+    store.isDayClosed(s1, new Date(y, m, d + 1, 8, 59)) === true,
+  );
+  check(
+    'dia reabre sozinho no dia seguinte às 9h',
+    store.isDayClosed(s1, new Date(y, m, d + 1, 9, 0)) === false,
+  );
+  check(
+    'dia aberto no dia seguinte às 12h',
+    store.isDayClosed(s1, new Date(y, m, d + 1, 12, 0)) === false,
+  );
+  check(
+    'dia aberto 2 dias depois às 8h',
+    store.isDayClosed(s1, new Date(y, m, d + 2, 8, 0)) === false,
+  );
+  check(
+    'data inválida não trava o dia',
+    store.isDayClosed({ ...s1, day_closed_date: 'invalida' }) === false,
+  );
+
+  // Salvar ajustes não apaga o fechamento do dia.
+  await store.saveSettings({ service_fee_pct: 4, table_count: 12, default_commission_pct: 8 });
+  check(
+    'fechamento preservado ao salvar ajustes',
+    (await store.getSettings()).day_closed_date === todayStr,
+  );
+  await store.saveSettings({ service_fee_pct: 3, table_count: 12, default_commission_pct: 8 });
+
+  // Acerto do dia: quanto pagar pra cada garçom (vendas de hoje).
+  const bills = await store.listClosedBills();
+  const startToday = new Date();
+  startToday.setHours(0, 0, 0, 0);
+  const todayBills = bills.filter((b) => new Date(b.closed_at) >= startToday);
+  check('4 contas fechadas hoje', todayBills.length === 4);
+  const pay = (waiterId) => {
+    const wb = todayBills.filter((b) => b.waiter_id === waiterId);
+    return {
+      sold: wb.reduce((s, b) => s + b.total_cents, 0),
+      comm: wb.reduce((s, b) => s + (b.commission_cents ?? 0), 0),
+    };
+  };
+  const carlosPay = pay(carlos.id);
+  check('Carlos vendeu hoje R$ 400,00', carlosPay.sold === 40000);
+  check('Carlos tem a receber R$ 36,00', carlosPay.comm === 3600);
+  const anaPay = pay(ana.id);
+  check('Ana vendeu hoje R$ 515,00', anaPay.sold === 51500);
+  check('Ana tem a receber R$ 51,50', anaPay.comm === 5150);
+  const totalPay = todayBills.reduce((s, b) => s + (b.commission_cents ?? 0), 0);
+  check('total a pagar aos garçons R$ 87,50', totalPay === 8750);
+  const totalSold = todayBills.reduce((s, b) => s + b.total_cents, 0);
+  check('restaurante fica com R$ 827,50', totalSold - totalPay === 82750);
+
+  // Reabrir o dia (dono finalizou sem querer).
+  const re = await store.reopenDay();
+  check('reopenDay limpa a data', re.day_closed_date == null);
+  const s2 = await store.getSettings();
+  check('dia aberto após reabrir', store.isDayClosed(s2) === false);
+  check('data limpa no banco', s2.day_closed_date == null);
+
+  // Checagens estáticas da tela.
+  const has = (src, s, name) => check(name, src.includes(s));
+  has(pageSrc, 'Finalizar dia', 'dashboard: botão "Finalizar dia"');
+  has(pageSrc, 'Reabrir dia', 'dashboard: botão "Reabrir dia"');
+  has(pageSrc, 'Finalizar o dia?', 'dashboard: confirmação de finalizar');
+  has(pageSrc, 'Quanto pagar pra cada garçom', 'confirmação: quanto pagar por garçom');
+  has(pageSrc, 'a receber', 'confirmação: valor a receber do garçom');
+  has(pageSrc, 'A pagar aos garçons', 'confirmação: total a pagar');
+  has(pageSrc, 'Dia encerrado', 'tela de mesas: aviso de dia encerrado');
+  has(pageSrc, 'Reabre amanhã às 9h', 'aviso: reabre às 9h');
+  has(pageSrc, 'dayClosedNow', 'travas do garçom conferem o dia no banco');
+  has(pageSrc, 'finalizeDay', 'tela chama finalizeDay');
+  has(pageSrc, 'reopenDay', 'tela chama reopenDay');
+  has(pageSrc, 'isDayClosed(settings)', 'tela de mesas e dashboard leem o estado do dia');
+  has(pageSrc, 'settings={settings}', 'dashboard recebe os ajustes (estado do dia)');
+  has(storeSrc, 'isDayClosed', 'store: isDayClosed');
+  has(storeSrc, 'finalizeDay', 'store: finalizeDay');
+  has(storeSrc, 'reopenDay', 'store: reopenDay');
+  has(storeSrc, 'DAY_REOPEN_HOUR', 'store: reabertura às 9h');
+  has(storeSrc, 'localDateString', 'store: data local AAAA-MM-DD');
+  has(storeSrc, 'day_closed_date', 'store: campo day_closed_date');
+  has(sqlSrc, 'day_closed_date', 'SQL: coluna day_closed_date');
+  has(sqlSrc, 'add column if not exists day_closed_date', 'SQL: compatível com banco antigo');
+
+  // O resumo de quanto pagar é SÓ do dono: o garçom só vê o aviso de
+  // dia encerrado, sem nenhum valor. As frases de pagamento só podem
+  // existir dentro da área do dono (dashboard), nunca na parte do garçom.
+  const dashStart = pageSrc.indexOf('DONO: DASHBOARD FINANCEIRO');
+  const dashEnd = pageSrc.indexOf('DONO: GARÇONS');
+  const dashSrc = pageSrc.slice(dashStart, dashEnd);
+  const waiterSrc = pageSrc.slice(0, dashStart);
+  for (const s of [
+    'a receber',
+    'Quanto pagar pra cada garçom',
+    'A pagar aos garçons',
+    'Finalizar dia',
+    'Reabrir dia',
+  ]) {
+    check(
+      '"' + s + '" só aparece na área do dono',
+      dashSrc.includes(s) && !waiterSrc.includes(s),
+    );
+  }
+  check(
+    'garçom vê o aviso de dia encerrado',
+    waiterSrc.includes('Dia encerrado'),
+  );
+  check(
+    'aviso do garçom é só o aviso, sem valor',
+    waiterSrc.includes('O dia está encerrado. Reabre amanhã às 9h.'),
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 10 · Build + HTTP                                                   */
+/* ------------------------------------------------------------------ */
+section('10 · Build + HTTP');
 {
   const run = (cmd, args) =>
     new Promise((resolve) => {

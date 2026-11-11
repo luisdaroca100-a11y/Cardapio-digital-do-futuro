@@ -423,11 +423,38 @@ function GarcomApp() {
     }
   }
 
+  /**
+   * Confere no banco se o dia está encerrado (vale pra todos os
+   * aparelhos — o dono pode ter finalizado o dia em outro celular).
+   * O dia reabre sozinho às 9h da manhã seguinte.
+   */
+  async function dayClosedNow(): Promise<boolean> {
+    const fresh = await store.getSettings();
+    setSettings(fresh);
+    return store.isDayClosed(fresh);
+  }
+
   async function openTable(tableNumber: number) {
     if (!session) return;
     setError('');
     setMenuOpen(false);
-    const existing = openOrders.find(
+    // Dia encerrado: o garçom só reabre uma mesa que já era dele (pra
+    // fechar); mesa nova não abre — o dia reabre sozinho às 9h.
+    const freshOrders = await store.listOpenOrders();
+    setOpenOrders(freshOrders);
+    if (await dayClosedNow()) {
+      const mine = freshOrders.find(
+        (o) =>
+          o.order.table_number === tableNumber &&
+          o.order.waiter_id === session.id &&
+          o.items.length > 0,
+      );
+      if (!mine) {
+        setError('O dia está encerrado. Reabre amanhã às 9h.');
+        return;
+      }
+    }
+    const existing = freshOrders.find(
       (o) => o.order.table_number === tableNumber,
     );
     if (existing) {
@@ -532,6 +559,13 @@ function GarcomApp() {
 
   async function addProduct(product: Product, serve?: string) {
     if (!currentOrder || !session) return;
+    // Dia encerrado: não entra item novo — só fechar as mesas abertas.
+    if (await dayClosedNow()) {
+      setError(
+        'O dia está encerrado. Não dá pra pedir mais — só fechar a mesa. Reabre amanhã às 9h.',
+      );
+      return;
+    }
     setBusy(true);
     try {
       let orderId = currentOrder.order.id;
@@ -579,12 +613,31 @@ function GarcomApp() {
   }
 
   async function changeQty(item: OrderItem, delta: number) {
+    // Dia encerrado: o pedido não muda — só fechar a mesa.
+    if (await dayClosedNow()) {
+      setError(
+        'O dia está encerrado. Não dá pra mudar o pedido — só fechar a mesa. Reabre amanhã às 9h.',
+      );
+      return;
+    }
     const next = item.qty + delta;
     if (next <= 0) {
       await store.removeItem(item.id);
     } else {
       await store.updateItem(item.id, { qty: next });
     }
+    if (currentOrder) await refreshCurrentOrder(currentOrder.order.id);
+  }
+
+  /** Retirar um item do resumo (também travado com o dia encerrado). */
+  async function removeOrderItem(itemId: string) {
+    if (await dayClosedNow()) {
+      setError(
+        'O dia está encerrado. Não dá pra mudar o pedido — só fechar a mesa. Reabre amanhã às 9h.',
+      );
+      return;
+    }
+    await store.removeItem(itemId);
     if (currentOrder) await refreshCurrentOrder(currentOrder.order.id);
   }
 
@@ -613,6 +666,13 @@ function GarcomApp() {
     if (!currentOrder) return;
     const pending = currentOrder.items.filter((i) => !i.sent);
     if (pending.length === 0) return;
+    // Dia encerrado: não envia pedido novo pra cozinha/bar.
+    if (await dayClosedNow()) {
+      setError(
+        'O dia está encerrado. Não dá pra enviar pedido novo. Reabre amanhã às 9h.',
+      );
+      return;
+    }
     setBusy(true);
     try {
       const orderNumber = await store.nextOrderNumber();
@@ -768,6 +828,7 @@ function GarcomApp() {
       <OwnerDashboardView
         bills={ownerBills}
         waiters={waiters}
+        settings={settings}
         onNavigate={setView}
         onLogout={handleOwnerLogout}
         onRefresh={refreshOwner}
@@ -839,6 +900,9 @@ function GarcomApp() {
     const inProgress = shownTables.filter((n) => busyOrder(n));
     const free = shownTables.filter((n) => !busyOrder(n));
     const pad2 = (n: number) => String(n).padStart(2, '0');
+    // Dia encerrado pelo dono: mesa nova não abre — só fechar as que já
+    // estavam abertas. Reabre sozinho amanhã às 9h.
+    const dayClosed = store.isDayClosed(settings);
     return (
       <div className="app">
         <header className="header header-blue">
@@ -871,6 +935,13 @@ function GarcomApp() {
         </header>
         <div className="content">
           {error && <div className="error">{error}</div>}
+          {dayClosed && (
+            <div className="error">
+              Dia encerrado — não dá pra abrir mesa nova nem fazer pedido
+              novo. Mesas abertas ainda podem ser fechadas. Reabre amanhã
+              às 9h.
+            </div>
+          )}
           <input
             className="table-search"
             type="search"
@@ -910,7 +981,7 @@ function GarcomApp() {
               <button
                 key={n}
                 className="mesa-tile free"
-                disabled={busy}
+                disabled={busy || dayClosed}
                 onClick={() => openTable(n)}
               >
                 <span className="mesa-open">ABRIR</span>
@@ -1239,9 +1310,7 @@ function GarcomApp() {
               item={item}
               onQty={(d) => changeQty(item, d)}
               onRemove={async () => {
-                await store.removeItem(item.id);
-                if (currentOrder)
-                  await refreshCurrentOrder(currentOrder.order.id);
+                await removeOrderItem(item.id);
               }}
               onNote={(note) => saveNote(item, note)}
             />
@@ -2542,12 +2611,14 @@ function OwnerHeader({
 function OwnerDashboardView({
   bills,
   waiters,
+  settings,
   onNavigate,
   onLogout,
   onRefresh,
 }: {
   bills: ClosedBill[];
   waiters: Waiter[];
+  settings: Settings;
   onNavigate: (v: View) => void;
   onLogout: () => void;
   onRefresh: () => Promise<void>;
@@ -2560,6 +2631,66 @@ function OwnerDashboardView({
     0,
   );
   const restaurant = sold - commission;
+
+  /* ------------------- FINALIZAR DIA ------------------- */
+  const dayClosed = store.isDayClosed(settings);
+  const [confirmFinalize, setConfirmFinalize] = useState(false);
+  const [busyDay, setBusyDay] = useState(false);
+  const [dayMsg, setDayMsg] = useState<{ text: string; error?: boolean } | null>(null);
+  // Resumo de hoje — quanto pagar pra cada garçom (vendeu, % e comissão).
+  const todayBills = filterBills(bills, 'today');
+  const todaySold = todayBills.reduce((s, b) => s + b.total_cents, 0);
+  const todayCommission = todayBills.reduce(
+    (s, b) => s + (b.commission_cents ?? 0),
+    0,
+  );
+  const todayRestaurant = todaySold - todayCommission;
+  const todayByWaiter = waiters
+    .map((w) => {
+      const wb = todayBills.filter((b) => b.waiter_id === w.id);
+      return {
+        waiter: w,
+        sold: wb.reduce((s, b) => s + b.total_cents, 0),
+        comm: wb.reduce((s, b) => s + (b.commission_cents ?? 0), 0),
+        pct: w.commission_pct ?? 8,
+      };
+    })
+    .filter((x) => x.sold > 0);
+
+  async function finalize() {
+    setBusyDay(true);
+    try {
+      await store.finalizeDay();
+      setConfirmFinalize(false);
+      setDayMsg({
+        text: 'Dia finalizado. Os garçons não conseguem abrir mesa nova nem fazer pedido novo — reabre amanhã às 9h.',
+      });
+      await onRefresh();
+    } catch {
+      setDayMsg({
+        text: 'Não foi possível finalizar o dia. Tente de novo.',
+        error: true,
+      });
+    } finally {
+      setBusyDay(false);
+    }
+  }
+
+  async function reopen() {
+    setBusyDay(true);
+    try {
+      await store.reopenDay();
+      setDayMsg({ text: 'Dia reaberto.' });
+      await onRefresh();
+    } catch {
+      setDayMsg({
+        text: 'Não foi possível reabrir o dia. Tente de novo.',
+        error: true,
+      });
+    } finally {
+      setBusyDay(false);
+    }
+  }
 
   return (
     <div className="app">
@@ -2655,7 +2786,97 @@ function OwnerDashboardView({
         <button className="btn btn-ghost" onClick={() => void onRefresh()}>
           Atualizar
         </button>
+        <div style={{ height: 10 }} />
+        {dayMsg && (
+          <div className={dayMsg.error ? 'error' : 'ok-note'}>{dayMsg.text}</div>
+        )}
+        {dayClosed ? (
+          <>
+            <div className="error">
+              Dia encerrado — os garçons não conseguem abrir mesa nova nem
+              fazer pedido novo. Mesas abertas ainda podem ser fechadas.
+              Reabre sozinho amanhã às 9h.
+            </div>
+            <button
+              className="btn btn-purple"
+              disabled={busyDay}
+              onClick={() => void reopen()}
+            >
+              Reabrir dia
+            </button>
+          </>
+        ) : (
+          <button
+            className="btn btn-purple"
+            disabled={busyDay}
+            onClick={() => setConfirmFinalize(true)}
+          >
+            Finalizar dia
+          </button>
+        )}
       </div>
+
+      {confirmFinalize && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h3 style={{ marginTop: 0 }}>Finalizar o dia?</h3>
+            <p className="hint">
+              Resumo de hoje — quanto pagar pra cada garçom. Depois de
+              finalizar, os garçons não conseguem abrir mesa nova nem fazer
+              pedido novo. Mesas abertas ainda podem ser fechadas. O dia
+              reabre sozinho amanhã às 9h.
+            </p>
+            <div className="stat-grid">
+              <div className="stat-card">
+                <span>Total vendido hoje</span>
+                <strong>{brl(todaySold)}</strong>
+              </div>
+              <div className="stat-card">
+                <span>A pagar aos garçons</span>
+                <strong>{brl(todayCommission)}</strong>
+              </div>
+              <div className="stat-card">
+                <span>Fica pro restaurante</span>
+                <strong>{brl(todayRestaurant)}</strong>
+              </div>
+            </div>
+            <div className="section-title">
+              Quanto pagar pra cada garçom
+            </div>
+            {todayByWaiter.length === 0 ? (
+              <div className="empty">Nenhuma venda hoje.</div>
+            ) : (
+              todayByWaiter.map((x) => (
+                <div key={x.waiter.id} className="item-row">
+                  <div className="top">
+                    <span className="iname">{x.waiter.name}</span>
+                    <span className="iline">a receber {brl(x.comm)}</span>
+                  </div>
+                  <div className="note-line">
+                    Vendeu {brl(x.sold)} · comissão {x.pct}% · restaurante{' '}
+                    {brl(x.sold - x.comm)}
+                  </div>
+                </div>
+              ))
+            )}
+            <div style={{ height: 12 }} />
+            <button
+              className="btn btn-green"
+              disabled={busyDay}
+              onClick={() => void finalize()}
+            >
+              Finalizar dia
+            </button>
+            <div style={{ height: 10 }} />
+            <button
+              className="btn btn-ghost"
+              onClick={() => setConfirmFinalize(false)}
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

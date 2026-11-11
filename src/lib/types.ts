@@ -49,6 +49,9 @@ export interface Settings {
   order_seq?: number;
   /** % de comissão padrão dos garçons (padrão 8) — vale pros novos */
   default_commission_pct?: number;
+  /** data (AAAA-MM-DD) em que o dono finalizou o dia; null = dia aberto.
+   * O dia reabre sozinho às 9h da manhã do dia seguinte. */
+  day_closed_date?: string | null;
 }
 
 export interface OrderItem {

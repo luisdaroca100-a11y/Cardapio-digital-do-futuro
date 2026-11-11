@@ -108,7 +108,63 @@ export const DEFAULT_SETTINGS: Settings = {
   table_count: 12,
   order_seq: 0,
   default_commission_pct: DEFAULT_COMMISSION_PCT,
+  day_closed_date: null,
 };
+
+/* ------------------------------------------------------------------ */
+/* Finalizar dia — o dia encerrado reabre sozinho às 9h do dia seguinte */
+/* ------------------------------------------------------------------ */
+
+/** Hora em que o dia encerrado reabre sozinho (9h da manhã seguinte). */
+export const DAY_REOPEN_HOUR = 9;
+
+/** Data local de hoje no formato AAAA-MM-DD. */
+export function localDateString(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * true quando o dia está encerrado agora: o dono finalizou o dia e
+ * ainda não chegou 9h da manhã do dia seguinte. Antes das 9h o dia
+ * continua fechado; depois das 9h abre sozinho, sem ninguém fazer nada.
+ * O fechamento vale só pro dia em que foi feito.
+ */
+export function isDayClosed(settings: Settings, now: Date = new Date()): boolean {
+  const closed = settings.day_closed_date;
+  if (!closed) return false;
+  const parts = closed.split('-').map(Number);
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) {
+    return false;
+  }
+  const [y, m, d] = parts;
+  const reopen = new Date(y, m - 1, d + 1, DAY_REOPEN_HOUR, 0, 0, 0);
+  return now.getTime() < reopen.getTime();
+}
+
+/**
+ * O dono finaliza o dia: grava a data de hoje. Vale pra todos os
+ * aparelhos (fica no banco, não só no celular do dono).
+ */
+export async function finalizeDay(): Promise<Settings> {
+  const settings = await getSettings();
+  const next: Settings = {
+    ...settings,
+    day_closed_date: localDateString(new Date()),
+  };
+  await saveSettings(next);
+  return next;
+}
+
+/** O dono reabre o dia (caso tenha finalizado sem querer). */
+export async function reopenDay(): Promise<Settings> {
+  const settings = await getSettings();
+  const next: Settings = { ...settings, day_closed_date: null };
+  await saveSettings(next);
+  return next;
+}
 
 /* ------------------------------------------------------------------ */
 /* Modo local (localStorage) — usado quando o Supabase não está        */
@@ -147,6 +203,7 @@ function loadLocal(): LocalDb {
           ...(d.settings ?? {}),
           default_commission_pct:
             d.settings?.default_commission_pct ?? DEFAULT_COMMISSION_PCT,
+          day_closed_date: d.settings?.day_closed_date ?? null,
         },
         orders: d.orders ?? [],
         items: d.items ?? [],
@@ -210,6 +267,7 @@ export async function getSettings(): Promise<Settings> {
     order_seq: data.order_seq ?? 0,
     default_commission_pct:
       data.default_commission_pct ?? DEFAULT_COMMISSION_PCT,
+    day_closed_date: data.day_closed_date ?? null,
   };
 }
 
