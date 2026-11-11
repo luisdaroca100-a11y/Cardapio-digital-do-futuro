@@ -11,6 +11,18 @@ export interface Waiter {
   name: string;
   login: string;
   password_hash: string;
+  /** % de comissão do garçom sobre o total da conta (padrão 8) */
+  commission_pct?: number;
+  created_at: string;
+}
+
+/** Dono do restaurante — um só; login próprio de administrador. */
+export interface Owner {
+  id: string;
+  name: string;
+  /** usuário que só o dono sabe */
+  login: string;
+  password_hash: string;
   created_at: string;
 }
 
@@ -35,6 +47,8 @@ export interface Settings {
   table_count: number;
   /** próximo número do pedido — sequencial, "Pedido Nº 0001" */
   order_seq?: number;
+  /** % de comissão padrão dos garçons (padrão 8) — vale pros novos */
+  default_commission_pct?: number;
 }
 
 export interface OrderItem {
@@ -73,6 +87,11 @@ export interface ClosedBill {
   subtotal_cents: number;
   fee_cents: number;
   total_cents: number;
+  /** comissão do garçom em centavos — congelada na hora do fechamento
+   * (se a % mudar depois, a conta antiga não muda) */
+  commission_cents?: number;
+  /** % de comissão usada no fechamento (foto da % naquele momento) */
+  commission_pct?: number;
   closed_at: string;
 }
 

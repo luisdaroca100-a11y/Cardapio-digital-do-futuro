@@ -4,14 +4,32 @@
 -- (Dashboard do projeto → SQL Editor → New query → colar → Run).
 -- ============================================================
 
--- Garçons (login + senha com hash SHA-256, criado no app)
-create table if not exists public.waiters (
+-- Dono do restaurante — um só; login próprio de administrador
+-- (usuário que só ele sabe + senha com hash SHA-256, criado no app).
+create table if not exists public.owners (
   id uuid primary key,
   name text not null,
   login text not null unique,
   password_hash text not null,
   created_at timestamptz not null default now()
 );
+
+-- Garçons (login + senha com hash SHA-256, criado no app)
+-- commission_pct: % de comissão do garçom sobre o total da conta.
+create table if not exists public.waiters (
+  id uuid primary key,
+  name text not null,
+  login text not null unique,
+  password_hash text not null,
+  commission_pct numeric not null default 8
+    check (commission_pct >= 0 and commission_pct <= 100),
+  created_at timestamptz not null default now()
+);
+
+-- Para bancos criados com a versão anterior do schema (sem a coluna):
+alter table public.waiters
+  add column if not exists commission_pct numeric not null default 8
+    check (commission_pct >= 0 and commission_pct <= 100);
 
 -- Produtos do cardápio
 -- prints_in: 'kitchen' (prato → impressora da cozinha)
@@ -43,18 +61,25 @@ alter table public.products
 
 -- Configurações (uma única linha, id = 1)
 -- order_seq: contador do número do pedido ("Pedido Nº 0001"), sequencial.
+-- default_commission_pct: % de comissão padrão dos garçons (vale pros
+-- novos garçons; cada um pode ter a sua própria %).
 create table if not exists public.settings (
   id integer primary key,
   service_fee_pct numeric not null default 3
     check (service_fee_pct >= 0 and service_fee_pct <= 100),
   table_count integer not null default 12
     check (table_count >= 1 and table_count <= 100),
-  order_seq integer not null default 0
+  order_seq integer not null default 0,
+  default_commission_pct numeric not null default 8
+    check (default_commission_pct >= 0 and default_commission_pct <= 100)
 );
 
--- Para bancos criados com a versão anterior do schema (sem a coluna):
+-- Para bancos criados com a versão anterior do schema (sem as colunas):
 alter table public.settings
   add column if not exists order_seq integer not null default 0;
+alter table public.settings
+  add column if not exists default_commission_pct numeric not null default 8
+    check (default_commission_pct >= 0 and default_commission_pct <= 100);
 
 -- Próximo número do pedido — incremento atômico (dois garçons
 -- enviando ao mesmo tempo não pegam o mesmo número).
@@ -101,8 +126,10 @@ create table if not exists public.order_items (
 alter table public.order_items
   add column if not exists serve text;
 
--- Contas fechadas — é daqui que o futuro sistema financeiro
--- do dono vai ler as vendas por garçom (valor, taxa, garçom).
+-- Contas fechadas — é daqui que o sistema financeiro do dono lê
+-- as vendas por garçom (valor, taxa, comissão do garçom).
+-- commission_cents / commission_pct: comissão congelada na hora do
+-- fechamento (se a % do garçom mudar depois, a conta antiga não muda).
 create table if not exists public.closed_bills (
   id uuid primary key,
   order_id uuid not null references public.orders (id),
@@ -112,8 +139,16 @@ create table if not exists public.closed_bills (
   subtotal_cents integer not null,
   fee_cents integer not null,
   total_cents integer not null,
+  commission_cents integer not null default 0,
+  commission_pct numeric not null default 0,
   closed_at timestamptz not null default now()
 );
+
+-- Para bancos criados com a versão anterior do schema (sem as colunas):
+alter table public.closed_bills
+  add column if not exists commission_cents integer not null default 0;
+alter table public.closed_bills
+  add column if not exists commission_pct numeric not null default 0;
 
 -- Garante a linha de configurações (id = 1)
 insert into public.settings (id, service_fee_pct, table_count)
@@ -123,10 +158,11 @@ on conflict (id) do nothing;
 -- ------------------------------------------------------------
 -- Acesso: o app usa a chave ANON do Supabase.
 -- Estas policies liberam o acesso às tabelas (protótipo do
--- restaurante — o dono é quem vai restringir depois, quando o
--- sistema do dono entrar, com login próprio de administrador).
+-- restaurante — o login do dono separa as áreas no app, mas o
+-- banco ainda não restringe por usuário).
 -- ------------------------------------------------------------
 
+alter table public.owners enable row level security;
 alter table public.waiters enable row level security;
 alter table public.products enable row level security;
 alter table public.settings enable row level security;
@@ -134,6 +170,8 @@ alter table public.orders enable row level security;
 alter table public.order_items enable row level security;
 alter table public.closed_bills enable row level security;
 
+create policy "dono_all_owners" on public.owners
+  for all using (true) with check (true);
 create policy "garcom_all_waiters" on public.waiters
   for all using (true) with check (true);
 create policy "garcom_all_products" on public.products

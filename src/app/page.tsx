@@ -4,6 +4,7 @@ import { Component, useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import * as store from '@/lib/store';
 import {
+  OWNER_SESSION_KEY,
   SESSION_KEY,
   isSupabase,
   safeGet,
@@ -15,6 +16,7 @@ import type {
   DrinkType,
   OrderItem,
   OrderWithItems,
+  Owner,
   Product,
   Settings,
   Waiter,
@@ -30,7 +32,11 @@ type View =
   | 'settings'
   | 'closed'
   | 'review'
-  | 'menu';
+  | 'menu'
+  | 'owner'
+  | 'owner-waiters'
+  | 'owner-menu'
+  | 'owner-settings';
 
 function brl(cents: number): string {
   return (cents / 100).toLocaleString('pt-BR', {
@@ -50,6 +56,19 @@ function parsePriceToCents(raw: string): number | null {
 function formatTime(iso: string): string {
   try {
     return new Date(iso).toLocaleTimeString('pt-BR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return '';
+  }
+}
+
+function formatDateTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
     });
@@ -169,6 +188,29 @@ function GarcomApp() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
+  /* ------------------------------ DONO ------------------------------ */
+  /** sessão do dono (área financeira — separada da sessão do garçom) */
+  const [ownerSession, setOwnerSession] = useState<Session | null>(null);
+  /** tela de acesso do dono: login ou criação (null = login do garçom) */
+  const [ownerAuth, setOwnerAuth] = useState<'login' | 'setup' | null>(null);
+  const [hasOwner, setHasOwner] = useState(false);
+  const [waiters, setWaiters] = useState<Waiter[]>([]);
+  /** contas fechadas p/ o financeiro do dono */
+  const [ownerBills, setOwnerBills] = useState<ClosedBill[]>([]);
+
+  const refreshOwner = useCallback(async () => {
+    const [w, b, s, p] = await Promise.all([
+      store.listWaiters(),
+      store.listClosedBills(),
+      store.getSettings(),
+      store.listProducts(),
+    ]);
+    setWaiters(w);
+    setOwnerBills(b);
+    setSettings(s);
+    setProducts(p);
+  }, []);
+
   const refresh = useCallback(async () => {
     const [s, p, o] = await Promise.all([
       store.getSettings(),
@@ -191,7 +233,12 @@ function GarcomApp() {
   useEffect(() => {
     (async () => {
       try {
-        const [waiters] = await Promise.all([store.listWaiters(), refresh()]);
+        const [waiters, owner] = await Promise.all([
+          store.listWaiters(),
+          store.getOwner(),
+          refresh(),
+        ]);
+        setHasOwner(!!owner);
         // Mesas abertas sem nenhum item (restos da regra antiga) voltam
         // a ficar livres.
         await store.cleanupEmptyOrders();
@@ -199,6 +246,25 @@ function GarcomApp() {
         if (waiters.length === 0) {
           setView('setup');
           return;
+        }
+        // Sessão do dono (área financeira) tem prioridade sobre a do garçom.
+        const rawOwner = safeGet(OWNER_SESSION_KEY);
+        if (rawOwner && owner) {
+          try {
+            const s = JSON.parse(rawOwner) as Session;
+            if (s.id === owner.id) {
+              setOwnerSession({
+                id: owner.id,
+                name: owner.name,
+                login: owner.login,
+              });
+              await refreshOwner();
+              setView('owner');
+              return;
+            }
+          } catch {
+            /* sessão inválida: vai pro login */
+          }
         }
         const raw = safeGet(SESSION_KEY);
         if (raw) {
@@ -224,7 +290,7 @@ function GarcomApp() {
         setBooting(false);
       }
     })();
-  }, [refresh]);
+  }, [refresh, refreshOwner]);
 
   async function handleLogin(login: string, password: string) {
     setError('');
@@ -254,6 +320,67 @@ function GarcomApp() {
     setServeProduct(null);
     setMenuOpen(false);
     safeRemove(SESSION_KEY);
+    setView('login');
+  }
+
+  /* ------------------------------ DONO: ACESSO ------------------------------ */
+
+  async function handleOwnerLogin(login: string, password: string) {
+    setError('');
+    setBusy(true);
+    try {
+      const owner = await store.findOwnerByLogin(login.trim());
+      if (!owner) throw new Error('Login ou senha incorretos.');
+      const hash = await store.hashPassword(password);
+      if (hash !== owner.password_hash) {
+        throw new Error('Login ou senha incorretos.');
+      }
+      const s: Session = { id: owner.id, name: owner.name, login: owner.login };
+      setOwnerSession(s);
+      safeSet(OWNER_SESSION_KEY, JSON.stringify(s));
+      setOwnerAuth(null);
+      await refreshOwner();
+      setView('owner');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Não foi possível entrar.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Primeiro acesso do dono: cria o usuário dele (só ele sabe). */
+  async function handleOwnerCreate(
+    name: string,
+    login: string,
+    password: string,
+  ) {
+    setError('');
+    setBusy(true);
+    try {
+      const hash = await store.hashPassword(password);
+      const owner: Owner = await store.createOwner(
+        name.trim(),
+        login.trim(),
+        hash,
+      );
+      const s: Session = { id: owner.id, name: owner.name, login: owner.login };
+      setOwnerSession(s);
+      setHasOwner(true);
+      safeSet(OWNER_SESSION_KEY, JSON.stringify(s));
+      setOwnerAuth(null);
+      await refreshOwner();
+      setView('owner');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Não foi possível criar o acesso.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleOwnerLogout() {
+    setOwnerSession(null);
+    setOwnerAuth(null);
+    safeRemove(OWNER_SESSION_KEY);
     setView('login');
   }
 
@@ -603,7 +730,27 @@ function GarcomApp() {
         </div>
         <div className="content">
           {error && <div className="error">{error}</div>}
-          <LoginForm busy={busy} onLogin={handleLogin} />
+          {ownerAuth ? (
+            <OwnerAuthView
+              mode={ownerAuth}
+              busy={busy}
+              onLogin={handleOwnerLogin}
+              onCreate={handleOwnerCreate}
+              onCancel={() => setOwnerAuth(null)}
+            />
+          ) : (
+            <>
+              <LoginForm busy={busy} onLogin={handleLogin} />
+              <button
+                className="owner-link"
+                onClick={() =>
+                  setOwnerAuth(hasOwner ? 'login' : 'setup')
+                }
+              >
+                Sou o dono
+              </button>
+            </>
+          )}
           <div className="mode-badge">
             {isSupabase
               ? 'Banco de dados: Supabase (nuvem)'
@@ -611,6 +758,55 @@ function GarcomApp() {
           </div>
         </div>
       </div>
+    );
+  }
+
+  /* ------------------------------ ÁREA DO DONO ------------------------------ */
+
+  if (view === 'owner' && ownerSession) {
+    return (
+      <OwnerDashboardView
+        bills={ownerBills}
+        waiters={waiters}
+        onNavigate={setView}
+        onLogout={handleOwnerLogout}
+        onRefresh={refreshOwner}
+      />
+    );
+  }
+
+  if (view === 'owner-waiters' && ownerSession) {
+    return (
+      <OwnerWaitersView
+        waiters={waiters}
+        bills={ownerBills}
+        defaultPct={settings.default_commission_pct ?? 8}
+        onChanged={refreshOwner}
+        onNavigate={setView}
+        onLogout={handleOwnerLogout}
+      />
+    );
+  }
+
+  if (view === 'owner-menu' && ownerSession) {
+    return (
+      <OwnerMenuView
+        products={products}
+        onChanged={refreshOwner}
+        onNavigate={setView}
+        onLogout={handleOwnerLogout}
+      />
+    );
+  }
+
+  if (view === 'owner-settings' && ownerSession) {
+    return (
+      <OwnerSettingsView
+        settings={settings}
+        onSaved={refreshOwner}
+        onNavigate={setView}
+        onLogout={handleOwnerLogout}
+      />
     );
   }
 
@@ -1500,10 +1696,15 @@ function ProductForm({
   products,
   onAdded,
   disabled,
+  editing,
+  onCancelEdit,
 }: {
   products: Product[];
   onAdded: () => Promise<void>;
   disabled?: boolean;
+  /** produto em edição (só na área do dono) — null = cadastro novo */
+  editing?: Product | null;
+  onCancelEdit?: () => void;
 }) {
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
@@ -1513,6 +1714,17 @@ function ProductForm({
   const [description, setDescription] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // Ao escolher um produto pra editar, preenche o formulário com ele.
+  useEffect(() => {
+    if (!editing) return;
+    setName(editing.name);
+    setPrice(String(editing.price_cents / 100).replace('.', ','));
+    setCategory(editing.category);
+    setPrintsIn(editing.prints_in);
+    setDrinkType(editing.drink_type ?? 'refrigerante');
+    setDescription(editing.description ?? '');
+  }, [editing]);
 
   const suggestions = Array.from(
     new Set(products.map((p) => p.category)),
@@ -1535,7 +1747,7 @@ function ProductForm({
     }
     setBusy(true);
     try {
-      await store.createProduct({
+      const input = {
         name: name.trim(),
         price_cents: cents,
         category: category.trim(),
@@ -1545,7 +1757,12 @@ function ProductForm({
           printsIn === 'kitchen' && description.trim()
             ? description.trim()
             : undefined,
-      });
+      };
+      if (editing) {
+        await store.updateProduct(editing.id, input);
+      } else {
+        await store.createProduct(input);
+      }
       setName('');
       setPrice('');
       setCategory('');
@@ -1655,8 +1872,16 @@ function ProductForm({
         disabled={busy || disabled}
         onClick={add}
       >
-        Adicionar ao cardápio
+        {editing ? 'Salvar alterações' : 'Adicionar ao cardápio'}
       </button>
+      {editing && onCancelEdit && (
+        <>
+          <div style={{ height: 10 }} />
+          <button className="btn btn-ghost" onClick={onCancelEdit}>
+            Cancelar edição
+          </button>
+        </>
+      )}
     </div>
   );
 }
@@ -1665,10 +1890,13 @@ function ProductListGrouped({
   products,
   onDeleted,
   readOnly,
+  onEdit,
 }: {
   products: Product[];
   onDeleted: () => Promise<void>;
   readOnly?: boolean;
+  /** editar (só na área do dono) — quando ausente, não mostra o botão */
+  onEdit?: (p: Product) => void;
 }) {
   const groups = new Map<string, Product[]>();
   for (const p of products) {
@@ -1692,14 +1920,19 @@ function ProductListGrouped({
                   </span>
                 </span>
                 {!readOnly && (
-                  <button
-                    onClick={async () => {
-                      await store.deleteProduct(p.id);
-                      await onDeleted();
-                    }}
-                  >
-                    Remover
-                  </button>
+                  <>
+                    {onEdit && (
+                      <button onClick={() => onEdit(p)}>Editar</button>
+                    )}
+                    <button
+                      onClick={async () => {
+                        await store.deleteProduct(p.id);
+                        await onDeleted();
+                      }}
+                    >
+                      Remover
+                    </button>
+                  </>
                 )}
               </div>
             ))}
@@ -2102,8 +2335,8 @@ function SettingsView({
         <div className="card">
           <h2>Cardápio</h2>
           <p className="hint">
-            Adicione ou remova produtos. (No futuro, o cardápio será gerenciado
-            pelo dono, no sistema dele.)
+            O cardápio agora é gerenciado pelo dono, na área dele — entre
+            com o login do dono na tela de login.
           </p>
           <ProductForm products={products} onAdded={onSaved} />
           {products.length > 0 && (
@@ -2122,6 +2355,681 @@ function SettingsView({
           {isSupabase
             ? 'Banco de dados: Supabase (nuvem)'
             : 'Banco de dados: local (neste aparelho)'}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Área do dono                                                        */
+/* ------------------------------------------------------------------ */
+
+type Period = 'today' | '7d' | '30d' | 'all';
+
+const PERIOD_LABELS: Record<Period, string> = {
+  today: 'Hoje',
+  '7d': '7 dias',
+  '30d': '30 dias',
+  all: 'Tudo',
+};
+
+function filterBills(bills: ClosedBill[], period: Period): ClosedBill[] {
+  if (period === 'all') return bills;
+  const now = new Date();
+  if (period === 'today') {
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return bills.filter((b) => new Date(b.closed_at) >= start);
+  }
+  const days = period === '7d' ? 7 : 30;
+  const start = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+  return bills.filter((b) => new Date(b.closed_at) >= start);
+}
+
+/** Acesso do dono: login ou primeiro acesso (cria o usuário dele). */
+function OwnerAuthView({
+  mode,
+  busy,
+  onLogin,
+  onCreate,
+  onCancel,
+}: {
+  mode: 'login' | 'setup';
+  busy: boolean;
+  onLogin: (login: string, password: string) => void;
+  onCreate: (name: string, login: string, password: string) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [login, setLogin] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  function submit() {
+    if (mode === 'setup') {
+      if (!name.trim() || !login.trim()) {
+        setError('Preencha o nome e o usuário.');
+        return;
+      }
+      if (password.length < 4) {
+        setError('A senha precisa ter no mínimo 4 caracteres.');
+        return;
+      }
+      onCreate(name, login, password);
+    } else {
+      if (!login.trim() || !password) {
+        setError('Preencha o usuário e a senha.');
+        return;
+      }
+      onLogin(login, password);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>{mode === 'setup' ? 'Acesso do dono' : 'Área do dono'}</h2>
+      <p className="hint">
+        {mode === 'setup'
+          ? 'Primeiro acesso: crie o seu usuário. Ele é só seu — não passe pra ninguém.'
+          : 'Entre com o seu usuário para ver o financeiro.'}
+      </p>
+      {error && <div className="error">{error}</div>}
+      {mode === 'setup' && (
+        <div className="field">
+          <label htmlFor="owner-name">Seu nome</label>
+          <input
+            id="owner-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Ex.: Luis"
+          />
+        </div>
+      )}
+      <div className="field">
+        <label htmlFor="owner-login">Usuário (só você sabe)</label>
+        <input
+          id="owner-login"
+          autoComplete="username"
+          value={login}
+          onChange={(e) => setLogin(e.target.value)}
+          placeholder="Seu usuário"
+        />
+      </div>
+      <div className="field">
+        <label htmlFor="owner-password">Senha</label>
+        <input
+          id="owner-password"
+          type="password"
+          autoComplete={mode === 'setup' ? 'new-password' : 'current-password'}
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Sua senha"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') submit();
+          }}
+        />
+      </div>
+      <button className="btn btn-purple" disabled={busy} onClick={submit}>
+        {mode === 'setup' ? 'Criar acesso do dono' : 'Entrar no financeiro'}
+      </button>
+      <div style={{ height: 10 }} />
+      <button className="btn btn-ghost" onClick={onCancel}>
+        Voltar ao login do garçom
+      </button>
+    </div>
+  );
+}
+
+type OwnerTab = 'dashboard' | 'waiters' | 'menu' | 'settings';
+
+/** Cabeçalho da área do dono + abas (Dashboard, Garçons, Cardápio, Ajustes). */
+function OwnerHeader({
+  title,
+  sub,
+  tab,
+  onNavigate,
+  onLogout,
+}: {
+  title: string;
+  sub?: string;
+  tab: OwnerTab;
+  onNavigate: (v: View) => void;
+  onLogout: () => void;
+}) {
+  return (
+    <>
+      <header className="header">
+        <div>
+          <h1>{title}</h1>
+          {sub && <div className="sub">{sub}</div>}
+        </div>
+        <button className="icon-btn" onClick={onLogout}>
+          Sair
+        </button>
+      </header>
+      <div className="owner-tabs">
+        <button
+          className={tab === 'dashboard' ? 'on' : ''}
+          onClick={() => onNavigate('owner')}
+        >
+          Dashboard
+        </button>
+        <button
+          className={tab === 'waiters' ? 'on' : ''}
+          onClick={() => onNavigate('owner-waiters')}
+        >
+          Garçons
+        </button>
+        <button
+          className={tab === 'menu' ? 'on' : ''}
+          onClick={() => onNavigate('owner-menu')}
+        >
+          Cardápio
+        </button>
+        <button
+          className={tab === 'settings' ? 'on' : ''}
+          onClick={() => onNavigate('owner-settings')}
+        >
+          Ajustes
+        </button>
+      </div>
+    </>
+  );
+}
+
+/* ------------------- DONO: DASHBOARD FINANCEIRO ------------------- */
+
+function OwnerDashboardView({
+  bills,
+  waiters,
+  onNavigate,
+  onLogout,
+  onRefresh,
+}: {
+  bills: ClosedBill[];
+  waiters: Waiter[];
+  onNavigate: (v: View) => void;
+  onLogout: () => void;
+  onRefresh: () => Promise<void>;
+}) {
+  const [period, setPeriod] = useState<Period>('today');
+  const shown = filterBills(bills, period);
+  const sold = shown.reduce((s, b) => s + b.total_cents, 0);
+  const commission = shown.reduce(
+    (s, b) => s + (b.commission_cents ?? 0),
+    0,
+  );
+  const restaurant = sold - commission;
+
+  return (
+    <div className="app">
+      <OwnerHeader
+        title="Área do dono"
+        sub="Financeiro do restaurante"
+        tab="dashboard"
+        onNavigate={onNavigate}
+        onLogout={onLogout}
+      />
+      <div className="content">
+        <div className="seg">
+          {(['today', '7d', '30d', 'all'] as Period[]).map((p) => (
+            <button
+              key={p}
+              type="button"
+              className={period === p ? 'on' : ''}
+              onClick={() => setPeriod(p)}
+            >
+              {PERIOD_LABELS[p]}
+            </button>
+          ))}
+        </div>
+
+        <div className="stat-grid">
+          <div className="stat-card">
+            <span>Total vendido</span>
+            <strong>{brl(sold)}</strong>
+          </div>
+          <div className="stat-card">
+            <span>Comissão dos garçons</span>
+            <strong>{brl(commission)}</strong>
+          </div>
+          <div className="stat-card">
+            <span>Fica pro restaurante</span>
+            <strong>{brl(restaurant)}</strong>
+          </div>
+        </div>
+
+        <div className="section-title">Por garçom</div>
+        {waiters.length === 0 ? (
+          <div className="empty">
+            Nenhum garçom cadastrado. Cadastre na aba Garçons.
+          </div>
+        ) : (
+          waiters.map((w) => {
+            const wb = shown.filter((b) => b.waiter_id === w.id);
+            const wSold = wb.reduce((s, b) => s + b.total_cents, 0);
+            const wComm = wb.reduce(
+              (s, b) => s + (b.commission_cents ?? 0),
+              0,
+            );
+            const pct = w.commission_pct ?? 8;
+            return (
+              <div key={w.id} className="item-row">
+                <div className="top">
+                  <span className="iname">{w.name}</span>
+                  <span className="iline">{brl(wSold)}</span>
+                </div>
+                <div className="note-line">
+                  Comissão {pct}% · dele {brl(wComm)} · restaurante{' '}
+                  {brl(wSold - wComm)}
+                </div>
+              </div>
+            );
+          })
+        )}
+
+        <div className="section-title">
+          Contas fechadas ({shown.length})
+        </div>
+        {shown.length === 0 ? (
+          <div className="empty">Nenhuma venda nesse período.</div>
+        ) : (
+          shown.map((b) => (
+            <div key={b.id} className="item-row">
+              <div className="top">
+                <span className="iname">
+                  Mesa {String(b.table_number).padStart(2, '0')} ·{' '}
+                  {b.waiter_name}
+                </span>
+                <span className="iline">{brl(b.total_cents)}</span>
+              </div>
+              <div className="note-line">
+                {formatDateTime(b.closed_at)} · Comissão{' '}
+                {brl(b.commission_cents ?? 0)}
+              </div>
+            </div>
+          ))
+        )}
+
+        <div style={{ height: 12 }} />
+        <button className="btn btn-ghost" onClick={() => void onRefresh()}>
+          Atualizar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------- DONO: GARÇONS ------------------- */
+
+function OwnerWaitersView({
+  waiters,
+  bills,
+  defaultPct,
+  onChanged,
+  onNavigate,
+  onLogout,
+}: {
+  waiters: Waiter[];
+  bills: ClosedBill[];
+  defaultPct: number;
+  onChanged: () => Promise<void>;
+  onNavigate: (v: View) => void;
+  onLogout: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [login, setLogin] = useState('');
+  const [password, setPassword] = useState('');
+  const [pct, setPct] = useState(String(defaultPct));
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<Waiter | null>(null);
+
+  function startEdit(w: Waiter) {
+    setEditingId(w.id);
+    setName(w.name);
+    setLogin(w.login);
+    setPassword('');
+    setPct(String(w.commission_pct ?? defaultPct));
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setName('');
+    setLogin('');
+    setPassword('');
+    setPct(String(defaultPct));
+  }
+
+  async function save() {
+    setError('');
+    const pctNum = Number(pct.replace(',', '.'));
+    if (!name.trim() || !login.trim()) {
+      setError('Preencha o nome e o login.');
+      return;
+    }
+    if (!Number.isFinite(pctNum) || pctNum < 0 || pctNum > 100) {
+      setError('Informe uma comissão entre 0 e 100%.');
+      return;
+    }
+    if (!editingId && password.length < 4) {
+      setError('A senha precisa ter no mínimo 4 caracteres.');
+      return;
+    }
+    if (editingId && password && password.length < 4) {
+      setError('A nova senha precisa ter no mínimo 4 caracteres.');
+      return;
+    }
+    setBusy(true);
+    try {
+      if (editingId) {
+        const patch: Partial<
+          Pick<Waiter, 'name' | 'commission_pct' | 'password_hash'>
+        > = { name: name.trim(), commission_pct: pctNum };
+        if (password) patch.password_hash = await store.hashPassword(password);
+        await store.updateWaiter(editingId, patch);
+      } else {
+        const hash = await store.hashPassword(password);
+        await store.createWaiter(name.trim(), login.trim(), hash, pctNum);
+      }
+      cancelEdit();
+      await onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Não foi possível salvar.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="app">
+      <OwnerHeader
+        title="Garçons"
+        sub="Só o dono cadastra os garçons — depois passa o login e a senha pra cada um"
+        tab="waiters"
+        onNavigate={onNavigate}
+        onLogout={onLogout}
+      />
+      <div className="content">
+        {error && <div className="error">{error}</div>}
+
+        <div className="card">
+          <h2>{editingId ? 'Editar garçom' : 'Novo garçom'}</h2>
+          <div className="field">
+            <label htmlFor="waiter-name">Nome</label>
+            <input
+              id="waiter-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Ex.: Carlos"
+            />
+          </div>
+          <div className="row2">
+            <div className="field">
+              <label htmlFor="waiter-login">Login</label>
+              <input
+                id="waiter-login"
+                autoComplete="username"
+                value={login}
+                disabled={!!editingId}
+                onChange={(e) => setLogin(e.target.value)}
+                placeholder="Ex.: carlos"
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="waiter-pct">Comissão (%)</label>
+              <input
+                id="waiter-pct"
+                inputMode="decimal"
+                value={pct}
+                onChange={(e) => setPct(e.target.value)}
+                placeholder="8"
+              />
+            </div>
+          </div>
+          <div className="field">
+            <label htmlFor="waiter-password">
+              {editingId ? 'Nova senha (deixe em branco pra manter)' : 'Senha'}
+            </label>
+            <input
+              id="waiter-password"
+              type="password"
+              autoComplete="new-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Mínimo 4 caracteres"
+            />
+          </div>
+          <button className="btn btn-purple" disabled={busy} onClick={save}>
+            {editingId ? 'Salvar alterações' : 'Cadastrar garçom'}
+          </button>
+          {editingId && (
+            <>
+              <div style={{ height: 10 }} />
+              <button className="btn btn-ghost" onClick={cancelEdit}>
+                Cancelar edição
+              </button>
+            </>
+          )}
+        </div>
+
+        <div className="section-title">Garçons cadastrados ({waiters.length})</div>
+        {waiters.length === 0 ? (
+          <div className="empty">Nenhum garçom cadastrado.</div>
+        ) : (
+          waiters.map((w) => {
+            const wSold = bills
+              .filter((b) => b.waiter_id === w.id)
+              .reduce((s, b) => s + b.total_cents, 0);
+            return (
+              <div key={w.id} className="item-row">
+                <div className="top">
+                  <span className="iname">{w.name}</span>
+                  <span className="iline">{brl(wSold)}</span>
+                </div>
+                <div className="note-line">
+                  Login: {w.login} · Comissão: {w.commission_pct ?? 8}% ·
+                  vendeu no total {brl(wSold)}
+                </div>
+                <div className="stepper">
+                  <button onClick={() => startEdit(w)}>Editar</button>
+                  <button
+                    className="remove"
+                    onClick={() => setConfirmDelete(w)}
+                  >
+                    Remover
+                  </button>
+                </div>
+              </div>
+            );
+          })
+        )}
+        {confirmDelete && (
+          <ConfirmModal
+            title={`Remover ${confirmDelete.name}?`}
+            text="O acesso dele para de funcionar. Só dá pra remover garçom sem vendas registradas."
+            confirmLabel="Remover"
+            onConfirm={async () => {
+              const w = confirmDelete;
+              setConfirmDelete(null);
+              setError('');
+              setBusy(true);
+              try {
+                await store.deleteWaiter(w.id);
+                await onChanged();
+              } catch (e) {
+                setError(
+                  e instanceof Error
+                    ? e.message
+                    : 'Não foi possível remover.',
+                );
+              } finally {
+                setBusy(false);
+              }
+            }}
+            onCancel={() => setConfirmDelete(null)}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------- DONO: CARDÁPIO ------------------- */
+
+function OwnerMenuView({
+  products,
+  onChanged,
+  onNavigate,
+  onLogout,
+}: {
+  products: Product[];
+  onChanged: () => Promise<void>;
+  onNavigate: (v: View) => void;
+  onLogout: () => void;
+}) {
+  const [editing, setEditing] = useState<Product | null>(null);
+  return (
+    <div className="app">
+      <OwnerHeader
+        title="Cardápio"
+        sub="Só o dono muda o cardápio"
+        tab="menu"
+        onNavigate={onNavigate}
+        onLogout={onLogout}
+      />
+      <div className="content">
+        <div className="card">
+          <h2>{editing ? `Editar: ${editing.name}` : 'Novo produto'}</h2>
+          <ProductForm
+            products={products}
+            editing={editing}
+            onAdded={async () => {
+              setEditing(null);
+              await onChanged();
+            }}
+            onCancelEdit={() => setEditing(null)}
+          />
+        </div>
+        {products.length > 0 && (
+          <ProductListGrouped
+            products={products}
+            onDeleted={onChanged}
+            onEdit={setEditing}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------- DONO: AJUSTES ------------------- */
+
+function OwnerSettingsView({
+  settings,
+  onSaved,
+  onNavigate,
+  onLogout,
+}: {
+  settings: Settings;
+  onSaved: () => Promise<void>;
+  onNavigate: (v: View) => void;
+  onLogout: () => void;
+}) {
+  const [fee, setFee] = useState(String(settings.service_fee_pct));
+  const [commission, setCommission] = useState(
+    String(settings.default_commission_pct ?? 8),
+  );
+  const [tables, setTables] = useState(String(settings.table_count));
+  const [error, setError] = useState('');
+  const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setError('');
+    setSaved(false);
+    const feePct = Number(fee.replace(',', '.'));
+    const commPct = Number(commission.replace(',', '.'));
+    const count = Number(tables);
+    if (!Number.isFinite(feePct) || feePct < 0 || feePct > 100) {
+      setError('Informe uma taxa de serviço entre 0 e 100.');
+      return;
+    }
+    if (!Number.isFinite(commPct) || commPct < 0 || commPct > 100) {
+      setError('Informe uma comissão padrão entre 0 e 100.');
+      return;
+    }
+    if (!Number.isInteger(count) || count < 1 || count > 100) {
+      setError('Informe o número de mesas (1 a 100).');
+      return;
+    }
+    setBusy(true);
+    try {
+      await store.saveSettings({
+        service_fee_pct: feePct,
+        table_count: count,
+        default_commission_pct: commPct,
+      });
+      await onSaved();
+      setSaved(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Não foi possível salvar.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="app">
+      <OwnerHeader
+        title="Ajustes"
+        sub="Taxa de serviço e comissão"
+        tab="settings"
+        onNavigate={onNavigate}
+        onLogout={onLogout}
+      />
+      <div className="content">
+        {error && <div className="error">{error}</div>}
+        {saved && <div className="ok-note">Ajustes salvos.</div>}
+        <div className="card">
+          <h2>Taxa de serviço e comissão</h2>
+          <p className="hint">
+            A comissão padrão vale pros garçons novos. Quem já existe mantém
+            a % dele — pra mudar, edite o garçom na aba Garçons.
+          </p>
+          <div className="row2">
+            <div className="field">
+              <label htmlFor="owner-fee">Taxa de serviço (%)</label>
+              <input
+                id="owner-fee"
+                inputMode="decimal"
+                value={fee}
+                onChange={(e) => setFee(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="owner-commission">Comissão padrão (%)</label>
+              <input
+                id="owner-commission"
+                inputMode="decimal"
+                value={commission}
+                onChange={(e) => setCommission(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="field">
+            <label htmlFor="owner-tables">Nº de mesas</label>
+            <input
+              id="owner-tables"
+              inputMode="numeric"
+              value={tables}
+              onChange={(e) => setTables(e.target.value)}
+            />
+          </div>
+          <button className="btn btn-purple" disabled={busy} onClick={save}>
+            Salvar ajustes
+          </button>
         </div>
       </div>
     </div>

@@ -4,6 +4,7 @@ import type {
   Order,
   OrderItem,
   OrderWithItems,
+  Owner,
   Product,
   Settings,
   Waiter,
@@ -52,6 +53,13 @@ export function safeRemove(key: string): void {
 /** Sessão do garçom logado (só guarda id + nome, nunca a senha). */
 export const SESSION_KEY = 'garcom_session_v1';
 
+/** Sessão do dono logado (só guarda id + nome, nunca a senha). */
+export const OWNER_SESSION_KEY = 'dono_session_v1';
+
+/** % de comissão padrão dos garçons (exemplo do dono: vendeu R$ 200,
+ * 8% = R$ 16 dele, R$ 184 do restaurante). */
+export const DEFAULT_COMMISSION_PCT = 8;
+
 export function newId(): string {
   try {
     return crypto.randomUUID();
@@ -99,6 +107,7 @@ export const DEFAULT_SETTINGS: Settings = {
   service_fee_pct: 3,
   table_count: 12,
   order_seq: 0,
+  default_commission_pct: DEFAULT_COMMISSION_PCT,
 };
 
 /* ------------------------------------------------------------------ */
@@ -108,6 +117,8 @@ export const DEFAULT_SETTINGS: Settings = {
 
 interface LocalDb {
   waiters: Waiter[];
+  /** dono do restaurante (um só; null até o primeiro acesso do dono) */
+  owner: Owner | null;
   products: Product[];
   settings: Settings;
   orders: Order[];
@@ -125,12 +136,25 @@ function loadLocal(): LocalDb {
     try {
       const d = JSON.parse(raw) as Partial<LocalDb>;
       return {
-        waiters: d.waiters ?? [],
+        waiters: (d.waiters ?? []).map((w) => ({
+          ...w,
+          commission_pct: w.commission_pct ?? DEFAULT_COMMISSION_PCT,
+        })),
+        owner: d.owner ?? null,
         products: d.products ?? [],
-        settings: d.settings ?? DEFAULT_SETTINGS,
+        settings: {
+          ...DEFAULT_SETTINGS,
+          ...(d.settings ?? {}),
+          default_commission_pct:
+            d.settings?.default_commission_pct ?? DEFAULT_COMMISSION_PCT,
+        },
         orders: d.orders ?? [],
         items: d.items ?? [],
-        bills: d.bills ?? [],
+        bills: (d.bills ?? []).map((b) => ({
+          ...b,
+          commission_cents: b.commission_cents ?? 0,
+          commission_pct: b.commission_pct ?? 0,
+        })),
         order_seq: d.order_seq ?? d.settings?.order_seq ?? 0,
       };
     } catch {
@@ -139,6 +163,7 @@ function loadLocal(): LocalDb {
   }
   return {
     waiters: [],
+    owner: null,
     products: [],
     settings: { ...DEFAULT_SETTINGS },
     orders: [],
@@ -183,6 +208,8 @@ export async function getSettings(): Promise<Settings> {
     service_fee_pct: data.service_fee_pct,
     table_count: data.table_count,
     order_seq: data.order_seq ?? 0,
+    default_commission_pct:
+      data.default_commission_pct ?? DEFAULT_COMMISSION_PCT,
   };
 }
 
@@ -212,16 +239,84 @@ export async function nextOrderNumber(): Promise<number> {
 }
 
 export async function saveSettings(s: Settings): Promise<void> {
+  // Mescla com o que já existe para não perder campos que a tela
+  // não editou (ex.: order_seq, default_commission_pct).
+  const merged: Settings = { ...(await getSettings()), ...s };
   if (!isSupabase) {
     const db = loadLocal();
-    db.settings = s;
+    db.settings = merged;
     saveLocal(db);
     return;
   }
   const { error } = await sb()
     .from('settings')
-    .upsert({ id: 1, ...s });
+    .upsert({ id: 1, ...merged });
   if (error) throw error;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dono (um só) — login próprio de administrador do financeiro.       */
+/* ------------------------------------------------------------------ */
+
+export async function getOwner(): Promise<Owner | null> {
+  if (!isSupabase) return loadLocal().owner;
+  const { data, error } = await sb()
+    .from('owners')
+    .select('*')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as Owner | null) ?? null;
+}
+
+export async function createOwner(
+  name: string,
+  login: string,
+  passwordHash: string,
+): Promise<Owner> {
+  const owner: Owner = {
+    id: newId(),
+    name,
+    login,
+    password_hash: passwordHash,
+    created_at: nowIso(),
+  };
+  if (!isSupabase) {
+    const db = loadLocal();
+    if (db.owner) throw new Error('Já existe um dono cadastrado.');
+    db.owner = owner;
+    saveLocal(db);
+    return owner;
+  }
+  const existing = await getOwner();
+  if (existing) throw new Error('Já existe um dono cadastrado.');
+  const { data, error } = await sb()
+    .from('owners')
+    .insert({
+      id: owner.id,
+      name: owner.name,
+      login: owner.login,
+      password_hash: owner.password_hash,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data as Owner;
+}
+
+export async function findOwnerByLogin(login: string): Promise<Owner | null> {
+  if (!isSupabase) {
+    const owner = loadLocal().owner;
+    return owner && owner.login === login ? owner : null;
+  }
+  const { data, error } = await sb()
+    .from('owners')
+    .select('*')
+    .eq('login', login)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as Owner | null) ?? null;
 }
 
 export async function listWaiters(): Promise<Waiter[]> {
@@ -238,12 +333,17 @@ export async function createWaiter(
   name: string,
   login: string,
   passwordHash: string,
+  commissionPct?: number,
 ): Promise<Waiter> {
+  const pct =
+    commissionPct ?? (await getSettings()).default_commission_pct ??
+    DEFAULT_COMMISSION_PCT;
   const waiter: Waiter = {
     id: newId(),
     name,
     login,
     password_hash: passwordHash,
+    commission_pct: pct,
     created_at: nowIso(),
   };
   if (!isSupabase) {
@@ -262,11 +362,73 @@ export async function createWaiter(
       name,
       login,
       password_hash: passwordHash,
+      commission_pct: pct,
     })
     .select()
     .single();
   if (error) throw error;
   return data as Waiter;
+}
+
+export async function getWaiterById(id: string): Promise<Waiter | null> {
+  if (!isSupabase) {
+    return loadLocal().waiters.find((w) => w.id === id) ?? null;
+  }
+  const { data, error } = await sb()
+    .from('waiters')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as Waiter | null) ?? null;
+}
+
+/** O dono edita nome, % de comissão e (opcional) a senha do garçom. */
+export async function updateWaiter(
+  id: string,
+  patch: Partial<Pick<Waiter, 'name' | 'commission_pct' | 'password_hash'>>,
+): Promise<void> {
+  if (!isSupabase) {
+    const db = loadLocal();
+    const w = db.waiters.find((x) => x.id === id);
+    if (!w) return;
+    if (patch.name !== undefined) w.name = patch.name;
+    if (patch.commission_pct !== undefined)
+      w.commission_pct = patch.commission_pct;
+    if (patch.password_hash !== undefined)
+      w.password_hash = patch.password_hash;
+    saveLocal(db);
+    return;
+  }
+  const { error } = await sb().from('waiters').update(patch).eq('id', id);
+  if (error) throw error;
+}
+
+/**
+ * O dono remove um garçom. Não deixa remover quem já tem pedido ou
+ * conta fechada (o financeiro precisa do histórico dele).
+ */
+export async function deleteWaiter(id: string): Promise<void> {
+  const open = await listOpenOrders();
+  if (open.some((ow) => ow.order.waiter_id === id)) {
+    throw new Error(
+      'Esse garçom tem mesa aberta. Feche as mesas dele antes de remover.',
+    );
+  }
+  const bills = await listClosedBills();
+  if (bills.some((b) => b.waiter_id === id)) {
+    throw new Error(
+      'Esse garçom já tem vendas registradas. Não dá pra remover (o financeiro precisa do histórico).',
+    );
+  }
+  if (!isSupabase) {
+    const db = loadLocal();
+    db.waiters = db.waiters.filter((w) => w.id !== id);
+    saveLocal(db);
+    return;
+  }
+  const { error } = await sb().from('waiters').delete().eq('id', id);
+  if (error) throw error;
 }
 
 export async function findWaiterByLogin(login: string): Promise<Waiter | null> {
@@ -348,6 +510,29 @@ export async function deleteProduct(id: string): Promise<void> {
     return;
   }
   const { error } = await sb().from('products').delete().eq('id', id);
+  if (error) throw error;
+}
+
+/** O dono edita um produto do cardápio (nome, preço, categoria, onde
+ * imprime, tipo de bebida e o que vem no prato). */
+export async function updateProduct(
+  id: string,
+  patch: Partial<
+    Pick<
+      Product,
+      'name' | 'price_cents' | 'category' | 'prints_in' | 'drink_type' | 'description'
+    >
+  >,
+): Promise<void> {
+  if (!isSupabase) {
+    const db = loadLocal();
+    const p = db.products.find((x) => x.id === id);
+    if (!p) return;
+    Object.assign(p, patch);
+    saveLocal(db);
+    return;
+  }
+  const { error } = await sb().from('products').update(patch).eq('id', id);
   if (error) throw error;
 }
 
@@ -602,7 +787,9 @@ export async function sendOrder(orderId: string): Promise<void> {
 }
 
 /**
- * Fecha a mesa: calcula os totais, grava a conta fechada (p/ o financeiro
+ * Fecha a mesa: calcula os totais, a comissão do garçom (com a % dele
+ * NAQUELE MOMENTO — fica gravada na conta; se a % mudar depois, as
+ * contas antigas não mudam), grava a conta fechada (p/ o financeiro
  * do dono ler depois) e marca o pedido como fechado. Retorna a conta.
  */
 export async function closeOrder(
@@ -613,6 +800,14 @@ export async function closeOrder(
   if (!ow) throw new Error('Pedido não encontrado.');
   const subtotal = ow.items.reduce((s, i) => s + i.price_cents * i.qty, 0);
   const fee = Math.round((subtotal * serviceFeePct) / 100);
+  const total = subtotal + fee;
+  // Comissão sobre o TOTAL da conta, com a % do garçom agora.
+  const waiter = await getWaiterById(ow.order.waiter_id);
+  const commissionPct =
+    waiter?.commission_pct ??
+    (await getSettings()).default_commission_pct ??
+    DEFAULT_COMMISSION_PCT;
+  const commission = Math.round((total * commissionPct) / 100);
   const bill: ClosedBill = {
     id: newId(),
     order_id: orderId,
@@ -621,7 +816,9 @@ export async function closeOrder(
     waiter_name: ow.order.waiter_name,
     subtotal_cents: subtotal,
     fee_cents: fee,
-    total_cents: subtotal + fee,
+    total_cents: total,
+    commission_cents: commission,
+    commission_pct: commissionPct,
     closed_at: nowIso(),
   };
   if (!isSupabase) {
@@ -644,6 +841,8 @@ export async function closeOrder(
     subtotal_cents: bill.subtotal_cents,
     fee_cents: bill.fee_cents,
     total_cents: bill.total_cents,
+    commission_cents: bill.commission_cents,
+    commission_pct: bill.commission_pct,
     closed_at: bill.closed_at,
   });
   if (billErr) throw billErr;
@@ -655,17 +854,25 @@ export async function closeOrder(
   return bill;
 }
 
-/** Contas fechadas (p/ o futuro sistema financeiro do dono). */
+/** Contas fechadas (p/ o financeiro do dono). */
 export async function listClosedBills(): Promise<ClosedBill[]> {
   if (!isSupabase) {
-    return [...loadLocal().bills].sort((a, b) =>
-      b.closed_at.localeCompare(a.closed_at),
-    );
+    return [...loadLocal().bills]
+      .map((b) => ({
+        ...b,
+        commission_cents: b.commission_cents ?? 0,
+        commission_pct: b.commission_pct ?? 0,
+      }))
+      .sort((a, b) => b.closed_at.localeCompare(a.closed_at));
   }
   const { data, error } = await sb()
     .from('closed_bills')
     .select('*')
     .order('closed_at', { ascending: false });
   if (error) throw error;
-  return (data ?? []) as ClosedBill[];
+  return ((data ?? []) as ClosedBill[]).map((b) => ({
+    ...b,
+    commission_cents: b.commission_cents ?? 0,
+    commission_pct: b.commission_pct ?? 0,
+  }));
 }
