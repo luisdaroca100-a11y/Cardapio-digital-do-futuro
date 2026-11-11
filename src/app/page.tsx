@@ -29,6 +29,7 @@ type View =
   | 'summary'
   | 'settings'
   | 'closed'
+  | 'review'
   | 'menu';
 
 function brl(cents: number): string {
@@ -131,6 +132,9 @@ const SERVE_OPTIONS = [
   'só copo',
 ];
 
+/** Categoria especial: mostra todos os produtos. */
+const ALL_PRODUCTS = '__todos__';
+
 function GarcomApp() {
   const [view, setView] = useState<View>('login');
   const [booting, setBooting] = useState(true);
@@ -149,6 +153,12 @@ function GarcomApp() {
   const [serveQty, setServeQty] = useState(1);
   const [orderCategory, setOrderCategory] = useState<string | null>(null);
   const [orderSearch, setOrderSearch] = useState('');
+  /** busca por número na tela de mesas ("Digite o nº da mesa/comanda...") */
+  const [tableSearch, setTableSearch] = useState('');
+  /** menu hambúrguer da tela de mesas (Revisão / Sair) */
+  const [menuOpen, setMenuOpen] = useState(false);
+  /** contas fechadas p/ a tela de Revisão */
+  const [closedBills, setClosedBills] = useState<ClosedBill[]>([]);
   const [tickets, setTickets] = useState<TicketData | null>(null);
   const [closedReview, setClosedReview] = useState<{
     bill: ClosedBill;
@@ -242,28 +252,78 @@ function GarcomApp() {
     setSession(null);
     setCurrentOrder(null);
     setServeProduct(null);
+    setMenuOpen(false);
     safeRemove(SESSION_KEY);
     setView('login');
   }
 
-  function openTable(tableNumber: number) {
+  /** Abre a Revisão: lista das mesas fechadas (menu hambúrguer). */
+  async function openReview() {
+    setMenuOpen(false);
+    setError('');
+    setBusy(true);
+    try {
+      const bills = await store.listClosedBills();
+      setClosedBills(bills);
+      setView('review');
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : 'Não foi possível abrir a revisão.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Abre o detalhe de uma conta fechada (a partir da Revisão). */
+  async function openClosedBill(bill: ClosedBill) {
+    setError('');
+    setBusy(true);
+    try {
+      const ow = await store.getOrderWithItems(bill.order_id);
+      setClosedReview({
+        bill,
+        items: ow ? ow.items : [],
+        tableNumber: bill.table_number,
+      });
+      setView('closed');
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : 'Não foi possível abrir a conta.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openTable(tableNumber: number) {
     if (!session) return;
     setError('');
+    setMenuOpen(false);
     const existing = openOrders.find(
       (o) => o.order.table_number === tableNumber,
     );
     if (existing) {
-      if (existing.order.waiter_id !== session.id) {
+      if (
+        existing.items.length === 0 &&
+        existing.order.waiter_id !== session.id
+      ) {
+        // Pedido vazio de outro garçom não trava a mesa (regra da trava):
+        // descarta o resto e abre como mesa livre.
+        await store.cleanupEmptyOrders();
+        await refresh();
+      } else if (existing.order.waiter_id !== session.id) {
         setError(
           `A Mesa ${tableNumber} foi aberta por ${existing.order.waiter_name}. Só ele pode abrir.`,
         );
         return;
+      } else {
+        setCurrentOrder(existing);
+        setOrderCategory(null);
+        setOrderSearch('');
+        setView(existing.items.length === 0 ? 'order' : 'summary');
+        return;
       }
-      setCurrentOrder(existing);
-      setOrderCategory(null);
-      setOrderSearch('');
-      setView(existing.items.length === 0 ? 'order' : 'summary');
-      return;
     }
     // Rascunho só em memória: a mesa só trava quando o primeiro item for
     // adicionado. Sair sem pedir não grava nada — a mesa continua livre.
@@ -288,6 +348,7 @@ function GarcomApp() {
   /** Volta às mesas descartando o rascunho (mesa aberta sem nenhum item). */
   function backToTablesFromOrder() {
     if (currentOrder && currentOrder.order.id === '') setCurrentOrder(null);
+    setMenuOpen(false);
     setView('tables');
   }
 
@@ -550,73 +611,106 @@ function GarcomApp() {
   /* ------------------------------ MESAS ------------------------------ */
 
   if (view === 'tables') {
-    const tables = Array.from(
+    const allTables = Array.from(
       { length: settings.table_count },
       (_, i) => i + 1,
     );
+    const q = tableSearch.trim();
+    // Busca por número: filtra a grade enquanto digita.
+    const shownTables = q
+      ? allTables.filter((n) => String(n).includes(q))
+      : allTables;
+    // Pedido em andamento = pedido aberto COM item (regra da trava:
+    // mesa aberta sem item continua livre).
+    const busyOrder = (n: number) => {
+      const ow = openOrders.find((o) => o.order.table_number === n);
+      return ow && ow.items.length > 0 ? ow : null;
+    };
+    const inProgress = shownTables.filter((n) => busyOrder(n));
+    const free = shownTables.filter((n) => !busyOrder(n));
+    const pad2 = (n: number) => String(n).padStart(2, '0');
     return (
       <div className="app">
-        <header className="header">
-          <div>
-            <h1>Mesas</h1>
-            <div className="sub">Olá, {session.name}</div>
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="icon-btn" onClick={handleLogout}>
-              Sair
-            </button>
-          </div>
+        <header className="header header-blue">
+          <h1>Mesas</h1>
+          <button
+            className="menu-btn"
+            aria-label="Menu"
+            onClick={() => setMenuOpen((v) => !v)}
+          >
+            ☰
+          </button>
+          {menuOpen && (
+            <>
+              <button
+                className="menu-backdrop"
+                aria-label="Fechar menu"
+                onClick={() => setMenuOpen(false)}
+              />
+              <div className="menu-drop">
+                <div className="menu-user">Olá, {session.name}</div>
+                <button className="menu-item" onClick={openReview}>
+                  Revisão
+                </button>
+                <button className="menu-item" onClick={handleLogout}>
+                  Sair
+                </button>
+              </div>
+            </>
+          )}
         </header>
         <div className="content">
           {error && <div className="error">{error}</div>}
-          <div className="tables-grid">
-            {tables.map((n) => {
-              const ow = openOrders.find((o) => o.order.table_number === n);
-              if (!ow) {
-                return (
-                  <button
-                    key={n}
-                    className="table-tile free"
-                    disabled={busy}
-                    onClick={() => openTable(n)}
-                  >
-                    <span className="num">Mesa {n}</span>
-                    <span className="state">Livre</span>
-                  </button>
-                );
-              }
+          <input
+            className="table-search"
+            type="search"
+            inputMode="numeric"
+            placeholder="Digite o nº da mesa/comanda..."
+            value={tableSearch}
+            onChange={(e) => setTableSearch(e.target.value)}
+          />
+          <div className="tables-section-title">
+            Pedidos em andamento ({inProgress.length})
+          </div>
+          <div className="mesas-grid">
+            {inProgress.map((n) => {
+              const ow = busyOrder(n)!;
               const mine = ow.order.waiter_id === session.id;
-              const total = ow.items.reduce(
-                (s, i) => s + i.price_cents * i.qty,
-                0,
-              );
               return (
                 <button
                   key={n}
-                  className={`table-tile ${mine ? 'mine' : 'other'}`}
+                  className={`mesa-tile ${mine ? 'mine' : 'other'}`}
                   disabled={busy}
                   onClick={() => openTable(n)}
                 >
-                  {!mine && <span className="lock">🔒</span>}
-                  <span className="num">Mesa {n}</span>
-                  <span className="owner">
-                    {ow.order.waiter_name}
-                    {mine ? ' (você)' : ''}
-                  </span>
-                  {mine && (
-                    <>
-                      <span className="total">{brl(total)}</span>
-                      <span className="state">
-                        {ow.items.reduce((s, i) => s + i.qty, 0)} itens ·{' '}
-                        {formatTime(ow.order.created_at)}
-                      </span>
-                    </>
+                  {!mine && <span className="mesa-lock">🔒</span>}
+                  <span className="mesa-num">{pad2(n)}</span>
+                  {!mine && (
+                    <span className="mesa-owner">{ow.order.waiter_name}</span>
                   )}
-                  {!mine && <span className="state">só ele pode abrir</span>}
                 </button>
               );
             })}
           </div>
+          <div className="tables-section-title">
+            Mesas/Comandas livres ({free.length})
+          </div>
+          <div className="mesas-grid">
+            {free.map((n) => (
+              <button
+                key={n}
+                className="mesa-tile free"
+                disabled={busy}
+                onClick={() => openTable(n)}
+              >
+                <span className="mesa-open">ABRIR</span>
+                <span className="mesa-num">{pad2(n)}</span>
+              </button>
+            ))}
+          </div>
+          {shownTables.length === 0 && (
+            <div className="empty">Nenhuma mesa com esse número.</div>
+          )}
         </div>
       </div>
     );
@@ -633,9 +727,11 @@ function GarcomApp() {
             p.name.toLowerCase().includes(query) ||
             p.category.toLowerCase().includes(query),
         )
-      : orderCategory
-        ? products.filter((p) => p.category === orderCategory)
-        : [];
+      : orderCategory === ALL_PRODUCTS
+        ? products
+        : orderCategory
+          ? products.filter((p) => p.category === orderCategory)
+          : [];
     const pendingCount = pendingItems.reduce((s, i) => s + i.qty, 0);
     const pendingTotal = pendingItems.reduce(
       (s, i) => s + i.price_cents * i.qty,
@@ -644,23 +740,63 @@ function GarcomApp() {
 
     return (
       <div className="app">
-        <header className="header">
-          <div>
-            <h1>Novo Pedido - Mesa {tableNumber}</h1>
-            <div className="sub">{session.name}</div>
-          </div>
-          <button className="icon-btn" onClick={backToTablesFromOrder}>
-            ✕ Mesas
+        <header className="header header-blue">
+          <h1>Novo Pedido - Mesa {tableNumber}</h1>
+          <button
+            className="menu-btn"
+            aria-label="Menu"
+            onClick={() => setMenuOpen((v) => !v)}
+          >
+            ☰
           </button>
+          {menuOpen && (
+            <>
+              <button
+                className="menu-backdrop"
+                aria-label="Fechar menu"
+                onClick={() => setMenuOpen(false)}
+              />
+              <div className="menu-drop">
+                <div className="menu-user">Olá, {session.name}</div>
+                <button
+                  className="menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    backToTablesFromOrder();
+                  }}
+                >
+                  Mesas
+                </button>
+                <button className="menu-item" onClick={openReview}>
+                  Revisão
+                </button>
+                <button className="menu-item" onClick={handleLogout}>
+                  Sair
+                </button>
+              </div>
+            </>
+          )}
         </header>
         <div className="content">
-          <input
-            className="search"
-            type="search"
-            placeholder="Buscar em todas categorias..."
-            value={orderSearch}
-            onChange={(e) => setOrderSearch(e.target.value)}
-          />
+          <div className="order-search">
+            <input
+              id="order-search"
+              className="order-search-input"
+              type="search"
+              placeholder="Buscar em todas categorias por código..."
+              value={orderSearch}
+              onChange={(e) => setOrderSearch(e.target.value)}
+            />
+            <button
+              className="order-search-btn"
+              aria-label="Buscar"
+              onClick={() =>
+                document.getElementById('order-search')?.focus()
+              }
+            >
+              🔍
+            </button>
+          </div>
           {query ? (
             <>
               <div className="section-title">Resultados da busca</div>
@@ -686,7 +822,11 @@ function GarcomApp() {
             </>
           ) : orderCategory ? (
             <>
-              <div className="section-title">{orderCategory}</div>
+              <div className="section-title">
+                {orderCategory === ALL_PRODUCTS
+                  ? 'Todos os produtos'
+                  : orderCategory}
+              </div>
               {shownProducts.length === 0 ? (
                 <div className="empty">
                   Nenhum produto nesta categoria.
@@ -725,6 +865,12 @@ function GarcomApp() {
                       {c}
                     </button>
                   ))}
+                  <button
+                    className="cat-tile cat-tile-all"
+                    onClick={() => setOrderCategory(ALL_PRODUCTS)}
+                  >
+                    Todos os produtos
+                  </button>
                 </div>
               )}
             </>
@@ -734,6 +880,7 @@ function GarcomApp() {
           <button
             className="btn btn-ghost"
             onClick={() => {
+              setMenuOpen(false);
               if (orderCategory || query) {
                 setOrderCategory(null);
                 setOrderSearch('');
@@ -744,14 +891,17 @@ function GarcomApp() {
               }
             }}
           >
-            VOLTAR
+            ← VOLTAR
           </button>
           <button
             className="btn btn-green"
             disabled={pendingCount === 0}
-            onClick={() => setView('summary')}
+            onClick={() => {
+              setMenuOpen(false);
+              setView('summary');
+            }}
           >
-            REVISAR ({pendingCount}) · {brl(pendingTotal)}
+            ✓ REVISAR ({pendingCount}) · {brl(pendingTotal)}
           </button>
         </div>
       </div>
@@ -968,6 +1118,47 @@ function GarcomApp() {
             }}
           />
         )}
+      </div>
+    );
+  }
+
+  /* ------------------- REVISÃO: CONTAS FECHADAS ------------------- */
+
+  if (view === 'review') {
+    return (
+      <div className="app">
+        <header className="header">
+          <div>
+            <h1>Revisão</h1>
+            <div className="sub">Mesas fechadas</div>
+          </div>
+          <button className="icon-btn" onClick={() => setView('tables')}>
+            ✕ Voltar
+          </button>
+        </header>
+        <div className="content">
+          {error && <div className="error">{error}</div>}
+          {closedBills.length === 0 ? (
+            <div className="empty">Nenhuma mesa fechada ainda.</div>
+          ) : (
+            closedBills.map((bill) => (
+              <button
+                key={bill.id}
+                className="review-row"
+                disabled={busy}
+                onClick={() => openClosedBill(bill)}
+              >
+                <span className="review-table">
+                  Mesa {String(bill.table_number).padStart(2, '0')}
+                </span>
+                <span className="review-meta">
+                  {bill.waiter_name} · {formatTime(bill.closed_at)}
+                </span>
+                <span className="review-total">{brl(bill.total_cents)}</span>
+              </button>
+            ))
+          )}
+        </div>
       </div>
     );
   }

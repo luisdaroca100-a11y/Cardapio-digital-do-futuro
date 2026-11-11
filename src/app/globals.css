@@ -2,6 +2,9 @@
   --purple: #8e24aa;
   --purple-dark: #6d1b80;
   --purple-light: #f3e5f5;
+  --blue: #2196f3;
+  --pink: #d81b60;
+  --pink-dark: #ad1457;
   --orange: #f57c00;
   --orange-dark: #e65100;
   --orange-light: #fff3e0;
@@ -352,6 +355,234 @@ select {
   font-size: 15px;
 }
 
+/* ---------- cabeçalho azul + menu hambúrguer (mesas / pedir) ---------- */
+
+.header-blue {
+  background: var(--blue);
+}
+
+.menu-btn {
+  background: transparent;
+  color: #fff;
+  border: none;
+  font-size: 24px;
+  line-height: 1;
+  padding: 4px 6px;
+}
+
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  border: none;
+  padding: 0;
+  z-index: 19;
+  cursor: default;
+}
+
+.menu-drop {
+  position: absolute;
+  top: calc(100% - 4px);
+  right: 10px;
+  background: #fff;
+  color: var(--ink);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  min-width: 180px;
+  padding: 6px;
+  z-index: 20;
+}
+
+.menu-user {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+
+.menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  border-radius: 8px;
+}
+
+.menu-item:active {
+  background: var(--line);
+}
+
+/* ---------- busca e grade de mesas ---------- */
+
+.table-search {
+  width: 100%;
+  border: none;
+  border-bottom: 2px solid var(--line);
+  border-radius: 0;
+  padding: 10px 2px;
+  margin-bottom: 14px;
+  background: #fff;
+  font-size: 16px;
+}
+
+.table-search:focus {
+  outline: none;
+  border-bottom-color: var(--blue);
+}
+
+.tables-section-title {
+  font-size: 15px;
+  font-weight: 800;
+  margin: 6px 0 10px;
+}
+
+.mesas-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.mesa-tile {
+  position: relative;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 4px;
+  min-width: 0;
+}
+
+.mesa-tile.mine {
+  background: #43a047;
+}
+
+.mesa-tile.other {
+  background: #f5a623;
+}
+
+.mesa-tile.free {
+  background: #9e9e9e;
+}
+
+.mesa-tile:disabled {
+  opacity: 0.6;
+}
+
+.mesa-num {
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.mesa-open {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  opacity: 0.95;
+}
+
+.mesa-lock {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  font-size: 13px;
+}
+
+.mesa-owner {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.1;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- revisão: contas fechadas ---------- */
+
+.review-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 10px;
+  text-align: left;
+}
+
+.review-table {
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.review-meta {
+  flex: 1;
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-total {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--green-dark);
+}
+
+/* ---------- busca da tela de pedir ---------- */
+
+.order-search {
+  display: flex;
+  margin-bottom: 14px;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.order-search:focus-within {
+  border-color: var(--purple);
+}
+
+.order-search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  padding: 10px 12px;
+  font-size: 16px;
+  background: #fff;
+}
+
+.order-search-input:focus {
+  outline: none;
+}
+
+.order-search-btn {
+  background: #e0e0e0;
+  color: var(--ink);
+  border: none;
+  padding: 0 14px;
+  font-size: 18px;
+}
+
 /* ---------- tela de pedido ---------- */
 
 .search {
@@ -384,10 +615,24 @@ select {
   font-weight: 800;
   text-transform: uppercase;
   min-height: 56px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .cat-tile:active {
   background: var(--orange-dark);
+}
+
+.cat-tile-all {
+  background: #fff;
+  color: var(--ink);
+  border: 2px solid var(--line);
+}
+
+.cat-tile-all:active {
+  background: var(--line);
 }
 
 /* ---------- como servir: cerveja / torre (quantidade) ---------- */
@@ -442,7 +687,7 @@ select {
 
 .prod-card {
   position: relative;
-  background: var(--purple);
+  background: var(--pink);
   color: #fff;
   border: none;
   border-radius: var(--radius);
@@ -452,7 +697,7 @@ select {
 }
 
 .prod-card:active {
-  background: var(--purple-dark);
+  background: var(--pink-dark);
 }
 
 .prod-card .pname {
