@@ -26,6 +26,7 @@ import type {
   Settings,
   Waiter,
 } from '@/lib/types';
+import { LANDING_HERO_VIDEO, LANDING_PRINTS } from '@/lib/landing-media';
 
 type View =
   | 'home'
@@ -3576,6 +3577,48 @@ function HomeView({
     }
     window.scrollTo(0, 0);
   }, []);
+  // Carrossel "Veja o sistema funcionando": prints reais das telas,
+  // avançando sozinhos. Pausa no toque/hover e respeita
+  // prefers-reduced-motion (sem avanço automático nem zoom; o vídeo
+  // do hero nem é renderizado nesse caso).
+  const [reducedMotion, setReducedMotion] = useState(false);
+  const [slide, setSlide] = useState(0);
+  const [carouselPaused, setCarouselPaused] = useState(false);
+  const touchX = useRef<number | null>(null);
+  const resumeTimer = useRef<number | null>(null);
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    setReducedMotion(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setReducedMotion(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (resumeTimer.current !== null) {
+        window.clearTimeout(resumeTimer.current);
+      }
+    };
+  }, []);
+  function pauseTemporarily(ms: number) {
+    setCarouselPaused(true);
+    if (resumeTimer.current !== null) {
+      window.clearTimeout(resumeTimer.current);
+    }
+    resumeTimer.current = window.setTimeout(
+      () => setCarouselPaused(false),
+      ms,
+    );
+  }
+  useEffect(() => {
+    if (reducedMotion || carouselPaused) return;
+    const id = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        setSlide((s) => (s + 1) % LANDING_PRINTS.length);
+      }
+    }, 4000);
+    return () => window.clearInterval(id);
+  }, [reducedMotion, carouselPaused]);
   // O botão flutuante de WhatsApp fica fixo no canto inferior direito
   // e cobria conteúdo ao rolar (antes o preço do plano Anual, depois
   // o nome do garçom no cupom térmico). Enquanto a grade de planos
@@ -3665,6 +3708,18 @@ function HomeView({
       </div>
       <div className="content home landing-content">
         <div className="landing-hero">
+          {!reducedMotion && (
+            <video
+              className="landing-hero-video"
+              src={LANDING_HERO_VIDEO}
+              autoPlay
+              muted
+              loop
+              playsInline
+              aria-hidden
+            />
+          )}
+          <div className="landing-hero-veil" aria-hidden />
           <h1>
             O pedido sai da mesa direto pra cozinha.{' '}
             <span className="landing-accent">
@@ -3730,6 +3785,70 @@ function HomeView({
                 <span className="lp-gray">ABRIR 06</span>
               </div>
             </div>
+          </div>
+        </div>
+
+        <div className="section-title">Veja o sistema funcionando</div>
+        <p className="hint">
+          Telas de verdade do sistema, passando sozinhas:
+        </p>
+        <div
+          className="showcase"
+          role="region"
+          aria-label="Demonstração do sistema"
+          onMouseEnter={() => setCarouselPaused(true)}
+          onMouseLeave={() => setCarouselPaused(false)}
+          onTouchStart={(e) => {
+            touchX.current = e.touches[0].clientX;
+            setCarouselPaused(true);
+          }}
+          onTouchEnd={(e) => {
+            if (touchX.current === null) return;
+            const dx = e.changedTouches[0].clientX - touchX.current;
+            if (Math.abs(dx) > 40) {
+              setSlide((s) =>
+                dx < 0
+                  ? (s + 1) % LANDING_PRINTS.length
+                  : (s - 1 + LANDING_PRINTS.length) % LANDING_PRINTS.length,
+              );
+            }
+            touchX.current = null;
+            pauseTemporarily(8000);
+          }}
+        >
+          <div className="landing-phone showcase-phone">
+            <div className="landing-phone-screen showcase-screen">
+              {LANDING_PRINTS.map((p, i) => (
+                <img
+                  key={p.caption}
+                  className={
+                    'showcase-slide' +
+                    (i === slide ? ' showcase-active' : '')
+                  }
+                  src={p.src}
+                  alt=""
+                />
+              ))}
+            </div>
+          </div>
+          <p className="showcase-caption">{LANDING_PRINTS[slide].caption}</p>
+          <div className="showcase-dots">
+            {LANDING_PRINTS.map((p, i) => (
+              <button
+                key={p.caption}
+                type="button"
+                aria-label={`Ver: ${p.caption}`}
+                aria-current={i === slide}
+                className={
+                  'showcase-dot' +
+                  (i === slide ? ' showcase-dot-active' : '')
+                }
+                onClick={() => {
+                  setSlide(i);
+                  pauseTemporarily(10000);
+                }}
+              />
+            ))}
           </div>
         </div>
 

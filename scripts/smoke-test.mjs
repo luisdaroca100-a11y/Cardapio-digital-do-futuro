@@ -30,6 +30,10 @@ const admSrc = readFileSync(path.join(ROOT, 'src/app/adm/page.tsx'), 'utf8');
 const storeSrc = readFileSync(path.join(ROOT, 'src/lib/store.ts'), 'utf8');
 const sqlSrc = readFileSync(path.join(ROOT, 'supabase.sql'), 'utf8');
 const cssSrc = readFileSync(path.join(ROOT, 'src/app/globals.css'), 'utf8');
+const mediaSrc = readFileSync(
+  path.join(ROOT, 'src/lib/landing-media.ts'),
+  'utf8',
+);
 
 let pass = 0;
 let fail = 0;
@@ -2227,6 +2231,146 @@ section('25 · Administrador escondido em /adm');
     'apresentação não tem entrada do admin',
     !homeSrc.includes('Área do administrador') &&
       !homeSrc.includes('admin'),
+  );
+}
+
+section('26 · Apresentação com carrossel de mídia (Parte 1)');
+{
+  const homeSrc = pageSrc.slice(
+    pageSrc.indexOf('function HomeView'),
+    pageSrc.indexOf('/* ------------------- DONO: DASHBOARD'),
+  );
+  // Mídia embutida: 4 prints reais das telas + 1 vídeo curto do hero.
+  check(
+    'mídia da landing: 4 prints reais em data URI (webp)',
+    (mediaSrc.match(/data:image\/webp;base64,/g) || []).length === 4,
+  );
+  check(
+    'mídia da landing: 1 vídeo do hero em data URI (mp4)',
+    (mediaSrc.match(/data:video\/mp4;base64,/g) || []).length === 1,
+  );
+  check(
+    'mídia nova total modesta (arquivo de mídia < 700KB)',
+    mediaSrc.length < 700000,
+  );
+  // Seção do carrossel depois do hero, antes de "Como funciona".
+  check(
+    'seção "Veja o sistema funcionando" existe',
+    homeSrc.includes('Veja o sistema funcionando'),
+  );
+  check(
+    'carrossel fica entre o hero e o "Como funciona"',
+    homeSrc.indexOf('Veja o sistema funcionando') <
+      homeSrc.indexOf('id="como-funciona"'),
+  );
+  check(
+    'carrossel renderiza os prints reais (LANDING_PRINTS)',
+    homeSrc.includes('LANDING_PRINTS.map'),
+  );
+  check(
+    'legenda de cada tela (caption) aparece no carrossel',
+    homeSrc.includes('showcase-caption'),
+  );
+  // Avanço automático + controles.
+  check(
+    'avanço automático a cada 4s (setInterval)',
+    homeSrc.includes('window.setInterval') &&
+      homeSrc.includes('setSlide((s) => (s + 1) % LANDING_PRINTS.length)'),
+  );
+  check(
+    'dots de navegação com rótulo por tela',
+    homeSrc.includes('showcase-dot') &&
+      homeSrc.includes('aria-label={`Ver: ${p.caption}`}'),
+  );
+  check(
+    'deslizar o dedo muda de tela (swipe por toque)',
+    homeSrc.includes('onTouchStart') && homeSrc.includes('onTouchEnd'),
+  );
+  check(
+    'pausa no hover e volta sozinho (pauseTemporarily)',
+    homeSrc.includes('onMouseEnter') && homeSrc.includes('pauseTemporarily'),
+  );
+  check(
+    'avanço para quando a aba some (visibilityState)',
+    homeSrc.includes("document.visibilityState === 'visible'"),
+  );
+  // Vídeo do hero: mudo, em loop, sem cobrir o texto.
+  check(
+    'vídeo do hero: autoPlay mudo em loop (playsInline)',
+    homeSrc.includes('LANDING_HERO_VIDEO') &&
+      homeSrc.includes('autoPlay') &&
+      homeSrc.includes('muted') &&
+      homeSrc.includes('loop') &&
+      homeSrc.includes('playsInline'),
+  );
+  check(
+    'véu escuro sobre o vídeo do hero (texto legível)',
+    homeSrc.includes('landing-hero-veil'),
+  );
+  // Movimento reduzido: sem vídeo, sem avanço automático, sem zoom.
+  check(
+    'respeita prefers-reduced-motion (matchMedia)',
+    homeSrc.includes("matchMedia('(prefers-reduced-motion: reduce)')"),
+  );
+  check(
+    'sem vídeo do hero quando o aparelho pede movimento reduzido',
+    homeSrc.includes('{!reducedMotion && (') &&
+      homeSrc.includes('landing-hero-video'),
+  );
+  check(
+    'sem avanço automático com movimento reduzido',
+    homeSrc.includes('if (reducedMotion || carouselPaused) return;'),
+  );
+  // CSS do carrossel + vídeo.
+  check('CSS do carrossel (.showcase)', cssSrc.includes('.showcase'));
+  check(
+    'CSS do slide com crossfade (.showcase-slide)',
+    cssSrc.includes('.showcase-slide') &&
+      cssSrc.includes('transition: opacity 0.8s ease'),
+  );
+  check(
+    'CSS do zoom lento (keyframes showcase-zoom)',
+    cssSrc.includes('@keyframes showcase-zoom'),
+  );
+  check('CSS dos dots (.showcase-dot)', cssSrc.includes('.showcase-dot'));
+  check(
+    'CSS do vídeo do hero (.landing-hero-video)',
+    cssSrc.includes('.landing-hero-video'),
+  );
+  check(
+    'CSS: vídeo do hero bem escurecido (opacity 0.32)',
+    cssSrc.includes('opacity: 0.32'),
+  );
+  check(
+    'CSS: movimento reduzido desliga o zoom',
+    cssSrc.includes('@media (prefers-reduced-motion: reduce)'),
+  );
+  // Mobile: a moldura do carrossel é a mesma do hero (230px) — cabe
+  // no celular sem estourar a largura.
+  check(
+    'carrossel usa a moldura de celular de 230px (.landing-phone)',
+    homeSrc.includes('landing-phone showcase-phone') &&
+      cssSrc.includes('.landing-phone {') &&
+      cssSrc.includes('width: 230px;'),
+  );
+  // Conteúdo intacto: as seções e os botões de cadastro continuam.
+  check(
+    'seções da landing intactas (Como funciona, Pro garçom, Pro dono, Dúvidas, Planos)',
+    homeSrc.includes('id="como-funciona"') &&
+      homeSrc.includes('id="pro-garcom"') &&
+      homeSrc.includes('id="pro-dono"') &&
+      homeSrc.includes('id="duvidas"') &&
+      homeSrc.includes('id="planos"'),
+  );
+  check(
+    'preços dos planos intactos',
+    homeSrc.includes('R$ 69,99 por mês') &&
+      homeSrc.includes('R$ 499,99 por ano'),
+  );
+  check(
+    'WhatsApp flutuante intacto',
+    homeSrc.includes('wa-float') &&
+      homeSrc.includes('5519971995144'),
   );
 }
 
