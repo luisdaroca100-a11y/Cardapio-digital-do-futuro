@@ -1,5 +1,25 @@
 export type PrintsIn = 'kitchen' | 'bar';
 
+/** Restaurante da plataforma multi-restaurante. Cada restaurante tem
+ * seu dono, seus garçons, seu cardápio, seus pedidos e suas vendas —
+ * ninguém vê dados de outro restaurante. */
+export interface Restaurant {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
+/** Administrador da plataforma (o Luis) — vê TODOS os restaurantes.
+ * É SEPARADO dos donos de restaurante: não é dono, não é garçom,
+ * não aparece em nenhum restaurante. Um só. */
+export interface PlatformAdmin {
+  id: string;
+  /** login que só ele sabe — único na plataforma toda */
+  login: string;
+  password_hash: string;
+  created_at: string;
+}
+
 /** Tipo da bebida (só quando prints_in = 'bar') — define as opções
  * de "Como servir": refrigerante → 4 quadradinhos de copo; cerveja →
  * "Precisa de copos?" (+ quantidade); torre → "Quantas canecas?";
@@ -8,7 +28,10 @@ export type DrinkType = 'refrigerante' | 'cerveja' | 'torre' | 'outro';
 
 export interface Waiter {
   id: string;
+  /** restaurante a que o garçom pertence */
+  restaurant_id?: string;
   name: string;
+  /** login ÚNICO na plataforma toda (não só no restaurante) */
   login: string;
   password_hash: string;
   /** % de comissão do garçom sobre o total da conta (padrão 8) */
@@ -16,11 +39,13 @@ export interface Waiter {
   created_at: string;
 }
 
-/** Dono do restaurante — um só; login próprio de administrador. */
+/** Dono do restaurante — um por restaurante; login próprio de administrador. */
 export interface Owner {
   id: string;
+  /** restaurante que o dono administra */
+  restaurant_id?: string;
   name: string;
-  /** usuário que só o dono sabe */
+  /** usuário que só o dono sabe — ÚNICO na plataforma toda */
   login: string;
   password_hash: string;
   created_at: string;
@@ -28,6 +53,8 @@ export interface Owner {
 
 export interface Product {
   id: string;
+  /** restaurante dono do cardápio */
+  restaurant_id?: string;
   name: string;
   /** preço em centavos */
   price_cents: number;
@@ -41,6 +68,8 @@ export interface Product {
 }
 
 export interface Settings {
+  /** restaurante dono destas configurações (uma linha por restaurante) */
+  restaurant_id?: string;
   /** taxa de serviço em % (padrão 3) */
   service_fee_pct: number;
   /** quantidade de mesas (padrão 12) */
@@ -57,6 +86,8 @@ export interface Settings {
 export interface OrderItem {
   id: string;
   order_id: string;
+  /** restaurante do pedido (herdado do pedido) */
+  restaurant_id?: string;
   product_id: string;
   product_name: string;
   /** preço unitário em centavos (foto do preço na hora do pedido) */
@@ -72,6 +103,8 @@ export interface OrderItem {
 
 export interface Order {
   id: string;
+  /** restaurante da mesa/pedido */
+  restaurant_id?: string;
   table_number: number;
   waiter_id: string;
   waiter_name: string;
@@ -84,6 +117,8 @@ export interface Order {
 export interface ClosedBill {
   id: string;
   order_id: string;
+  /** restaurante da venda */
+  restaurant_id?: string;
   table_number: number;
   waiter_id: string;
   waiter_name: string;

@@ -1131,6 +1131,12 @@ select {
   cursor: pointer;
 }
 
+/* Link ainda mais discreto da área do administrador (só o Luis usa) */
+.admin-link {
+  opacity: 0.65;
+  font-size: 13px;
+}
+
 /* Abas da área do dono (Dashboard, Garçons, Cardápio, Ajustes) */
 .owner-tabs {
   display: flex;

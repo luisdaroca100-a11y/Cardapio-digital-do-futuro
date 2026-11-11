@@ -56,19 +56,40 @@ async function throwsAsync(fn, name) {
 const brl = (c) => (c / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
 /* ------------------------------------------------------------------ */
-/* 1 · Dono: primeiro acesso e login                                   */
+/* 1 · Cadastro do restaurante + dono: primeiro acesso e login         */
 /* ------------------------------------------------------------------ */
-section('1 · Dono: primeiro acesso e login');
+section('1 · Cadastro do restaurante + dono');
+let gostoId = '';
 {
+  check('sem restaurante no início', (await store.listRestaurants()).length === 0);
   check('sem dono no início', (await store.getOwner()) === null);
+  check('sem admin no início', (await store.getPlatformAdmin()) === null);
   check(
     'login de dono inexistente retorna null',
     (await store.findOwnerByLogin('dono')) === null,
   );
+  check(
+    'login livre não está tomado',
+    (await store.isLoginTaken('dono-luis')) === false,
+  );
   const hash = await store.hashPassword('senha-dono-123');
-  const owner = await store.createOwner('Luis', 'dono-luis', hash);
+  const { restaurant, owner } = await store.registerRestaurant({
+    restaurantName: 'Gosto Caseiro',
+    ownerName: 'Luis',
+    login: 'dono-luis',
+    passwordHash: hash,
+  });
+  gostoId = restaurant.id;
+  check('restaurante criado com nome', restaurant.name === 'Gosto Caseiro');
+  check('restaurante ativo é o Gosto Caseiro', (await store.getActiveRestaurant())?.id === gostoId);
+  check('1 restaurante cadastrado', (await store.listRestaurants()).length === 1);
   check('dono criado com login', owner.login === 'dono-luis');
   check('dono criado com nome', owner.name === 'Luis');
+  check('dono pertence ao restaurante', owner.restaurant_id === gostoId);
+  check(
+    'login do dono agora está tomado',
+    (await store.isLoginTaken('dono-luis')) === true,
+  );
   const again = await store.getOwner();
   check('getOwner retorna o dono', again !== null && again.id === owner.id);
   check(
@@ -84,8 +105,21 @@ section('1 · Dono: primeiro acesso e login');
     (await store.hashPassword('outra-senha')) !== owner.password_hash,
   );
   await throwsAsync(
+    () => store.registerRestaurant({
+      restaurantName: 'Outro',
+      ownerName: 'Outro',
+      login: 'dono-luis',
+      passwordHash: hash,
+    }),
+    'cadastro com login de dono já usado é rejeitado',
+  );
+  await throwsAsync(
     () => store.createOwner('Outro', 'outro', hash),
-    'segundo dono é rejeitado',
+    'segundo dono no mesmo restaurante é rejeitado',
+  );
+  await throwsAsync(
+    () => store.createWaiter('Falso Dono', 'dono-luis', hash),
+    'garçom com login do dono é rejeitado',
   );
 }
 
@@ -310,8 +344,11 @@ section('8 · Fonte: área do dono');
   has(pageSrc, 'OwnerMenuView', 'componente de cardápio do dono');
   has(pageSrc, 'OwnerSettingsView', 'componente de ajustes do dono');
   has(pageSrc, 'OWNER_SESSION_KEY', 'sessão do dono separada');
+  has(pageSrc, 'handleRestaurantRegister', 'cadastro do restaurante');
+  has(pageSrc, 'Cadastrar meu restaurante', 'login tem link "Cadastrar meu restaurante"');
+  has(pageSrc, 'RegisterRestaurantView', 'componente de cadastro do restaurante');
   has(pageSrc, 'handleOwnerLogin', 'login do dono');
-  has(pageSrc, 'handleOwnerCreate', 'primeiro acesso do dono');
+  has(pageSrc, 'registerRestaurant', 'tela chama registerRestaurant');
   has(pageSrc, 'Por garçom', 'dashboard mostra "Por garçom"');
   has(pageSrc, 'Contas fechadas', 'dashboard lista contas fechadas');
   has(pageSrc, 'Fica pro restaurante', 'dashboard mostra o que fica pro restaurante');
@@ -331,11 +368,23 @@ section('8 · Fonte: área do dono');
   has(storeSrc, 'getOwner', 'store: getOwner');
   has(storeSrc, 'createOwner', 'store: createOwner');
   has(storeSrc, 'findOwnerByLogin', 'store: findOwnerByLogin');
+  has(storeSrc, 'registerRestaurant', 'store: registerRestaurant');
+  has(storeSrc, 'listRestaurants', 'store: listRestaurants');
+  has(storeSrc, 'getActiveRestaurant', 'store: getActiveRestaurant');
+  has(storeSrc, 'setActiveRestaurant', 'store: setActiveRestaurant');
+  has(storeSrc, 'isLoginTaken', 'store: login único na plataforma');
+  has(storeSrc, 'restaurant_id', 'store: filtro por restaurant_id');
   has(storeSrc, 'updateWaiter', 'store: updateWaiter');
   has(storeSrc, 'deleteWaiter', 'store: deleteWaiter');
   has(storeSrc, 'updateProduct', 'store: updateProduct');
   has(storeSrc, 'DEFAULT_COMMISSION_PCT', 'store: comissão padrão 8%');
   has(sqlSrc, 'create table if not exists public.owners', 'SQL: tabela owners');
+  has(sqlSrc, 'create table if not exists public.restaurants', 'SQL: tabela restaurants');
+  has(sqlSrc, 'create table if not exists public.platform_admins', 'SQL: tabela platform_admins');
+  has(sqlSrc, 'add column if not exists restaurant_id', 'SQL: coluna restaurant_id p/ banco antigo');
+  has(sqlSrc, 'next_order_number(p_restaurant_id uuid)', 'SQL: sequencial por restaurante');
+  has(sqlSrc, 'settings_restaurant_id_key', 'SQL: uma linha de settings por restaurante');
+  has(sqlSrc, 'Gosto Caseiro', 'SQL: migração do Gosto Caseiro');
   has(sqlSrc, 'commission_pct numeric', 'SQL: coluna commission_pct');
   has(sqlSrc, 'default_commission_pct', 'SQL: coluna default_commission_pct');
   has(sqlSrc, 'commission_cents integer', 'SQL: coluna commission_cents');
@@ -503,9 +552,403 @@ section('9 · Finalizar dia');
 }
 
 /* ------------------------------------------------------------------ */
-/* 10 · Build + HTTP                                                   */
+/* 10 · Multi-restaurante: isolamento entre dois restaurantes          */
 /* ------------------------------------------------------------------ */
-section('10 · Build + HTTP');
+section('10 · Multi-restaurante');
+let bellaId = '';
+{
+  const h = await store.hashPassword('senha-bela');
+  const { restaurant, owner } = await store.registerRestaurant({
+    restaurantName: 'Cantina Bella',
+    ownerName: 'Bela',
+    login: 'dono-bela',
+    passwordHash: h,
+  });
+  bellaId = restaurant.id;
+  check('segundo restaurante criado', restaurant.name === 'Cantina Bella');
+  check('2 restaurantes cadastrados', (await store.listRestaurants()).length === 2);
+  check('restaurante ativo trocou pra Bella', (await store.getActiveRestaurant())?.id === bellaId);
+  check('dona da Bella', owner.name === 'Bela');
+  // Restaurante novo começa vazio — nada do Gosto Caseiro aparece aqui.
+  check('Bella: sem garçons', (await store.listWaiters()).length === 0);
+  check('Bella: sem produtos', (await store.listProducts()).length === 0);
+  check('Bella: sem vendas', (await store.listClosedBills()).length === 0);
+  check('Bella: sem pedidos abertos', (await store.listOpenOrders()).length === 0);
+  check('Bella: ajustes no padrão', (await store.getSettings()).service_fee_pct === 3);
+  check('Bella: comissão padrão 8%', (await store.getSettings()).default_commission_pct === 8);
+  check('Bella: primeiro Pedido Nº é 1 (sequencial próprio)', (await store.nextOrderNumber()) === 1);
+
+  // Login duplicado na plataforma toda: nem garçom nem dono nem
+  // cadastro novo podem reutilizar um login que já existe.
+  await throwsAsync(
+    () => store.createWaiter('Outro Carlos', 'carlos', h),
+    'garçom com login de outro restaurante é rejeitado',
+  );
+  await throwsAsync(
+    () => store.createOwner('Falsa', 'dono-luis', h),
+    'dono com login de outro restaurante é rejeitado',
+  );
+  await throwsAsync(
+    () => store.registerRestaurant({
+      restaurantName: 'Terceiro',
+      ownerName: 'X',
+      login: 'ana',
+      passwordHash: h,
+    }),
+    'cadastro com login de garçom de outro restaurante é rejeitado',
+  );
+
+  // Vida própria na Bella: garçom, produto e uma venda de R$ 50.
+  const bruno = await store.createWaiter('Bruno', 'bruno', h);
+  check('garçom da Bella criado', bruno.restaurant_id === bellaId);
+  const pratoBella = await store.createProduct({
+    name: 'Prato Bella',
+    price_cents: 5000,
+    category: 'Almoço',
+    prints_in: 'kitchen',
+  });
+  await store.saveSettings({ service_fee_pct: 0, table_count: 12, default_commission_pct: 8 });
+  const orderB = await store.createOrder(2, bruno);
+  await store.addItem(orderB.id, pratoBella);
+  const billB = await store.closeOrder(orderB.id, 0);
+  check('Bella: venda de R$ 50,00', billB.total_cents === 5000);
+  check('Bella: 1 conta fechada', (await store.listClosedBills()).length === 1);
+
+  // Volta pro Gosto Caseiro: tudo dele intacto, nada da Bella misturado.
+  store.setActiveRestaurant(gostoId);
+  check('voltou pro Gosto Caseiro', (await store.getActiveRestaurant())?.id === gostoId);
+  check('Gosto: taxa continua 3%', (await store.getSettings()).service_fee_pct === 3);
+  check('Gosto: 2 garçons (Carlos e Ana)', (await store.listWaiters()).length === 2);
+  check(
+    'Gosto: garçom da Bella não aparece',
+    (await store.listWaiters()).find((w) => w.login === 'bruno') === undefined,
+  );
+  check(
+    'Gosto: produto da Bella não aparece',
+    (await store.listProducts()).find((p) => p.name === 'Prato Bella') === undefined,
+  );
+  check(
+    'Gosto: produto dele continua lá',
+    (await store.listProducts()).find((p) => p.name === 'Filé R$ 200') !== undefined,
+  );
+  check('Gosto: 4 contas fechadas (só as dele)', (await store.listClosedBills()).length === 4);
+  check(
+    'Gosto: venda da Bella não aparece',
+    (await store.listClosedBills()).find((b) => b.id === billB.id) === undefined,
+  );
+  check(
+    'Gosto: próximo Pedido Nº é 3 (sequencial dele, não o da Bella)',
+    (await store.nextOrderNumber()) === 3,
+  );
+
+  // Finalizar o dia na Bella não fecha o dia no Gosto Caseiro.
+  store.setActiveRestaurant(bellaId);
+  await store.finalizeDay();
+  check('Bella: dia fechado', store.isDayClosed(await store.getSettings()) === true);
+  store.setActiveRestaurant(gostoId);
+  check('Gosto: dia continua aberto', store.isDayClosed(await store.getSettings()) === false);
+  store.setActiveRestaurant(bellaId);
+  await store.reopenDay();
+  check('Bella: dia reaberto', store.isDayClosed(await store.getSettings()) === false);
+  store.setActiveRestaurant(gostoId);
+}
+
+/* ------------------------------------------------------------------ */
+/* 11 · Migração local: banco antigo vira Gosto Caseiro sem perder nada */
+/* ------------------------------------------------------------------ */
+section('11 · Migração do Gosto Caseiro');
+{
+  // Guarda o banco atual e simula um banco local ANTIGO (formato de
+  // antes do multi-restaurante: sem restaurants, dono único, settings
+  // única, order_seq solto).
+  const snap = new Map(mem);
+  const snapActive = store.getActiveRestaurantId();
+  store.setActiveRestaurant(null);
+  const legacyHash = await store.hashPassword('senha-legado');
+  const legacy = {
+    owner: {
+      id: 'legacy-owner-1',
+      name: 'Luis',
+      login: 'dono-legado',
+      password_hash: legacyHash,
+      created_at: '2026-11-01T00:00:00.000Z',
+    },
+    waiters: [
+      {
+        id: 'legacy-waiter-1',
+        name: 'Legado',
+        login: 'legado',
+        password_hash: 'x',
+        commission_pct: 8,
+        created_at: '2026-11-01T00:00:00.000Z',
+      },
+    ],
+    products: [
+      {
+        id: 'legacy-prod-1',
+        name: 'Prato legado',
+        price_cents: 2500,
+        category: 'Almoço',
+        prints_in: 'kitchen',
+        created_at: '2026-11-01T00:00:00.000Z',
+      },
+    ],
+    settings: {
+      service_fee_pct: 4,
+      table_count: 10,
+      order_seq: 0,
+      default_commission_pct: 8,
+      day_closed_date: null,
+    },
+    order_seq: 7,
+    orders: [
+      {
+        id: 'legacy-order-1',
+        table_number: 3,
+        waiter_id: 'legacy-waiter-1',
+        waiter_name: 'Legado',
+        status: 'closed',
+        created_at: '2026-11-01T00:00:00.000Z',
+        closed_at: '2026-11-01T01:00:00.000Z',
+      },
+    ],
+    items: [
+      {
+        id: 'legacy-item-1',
+        order_id: 'legacy-order-1',
+        product_id: 'legacy-prod-1',
+        product_name: 'Prato legado',
+        price_cents: 2500,
+        qty: 2,
+        note: '',
+        sent: true,
+        created_at: '2026-11-01T00:00:00.000Z',
+      },
+    ],
+    bills: [
+      {
+        id: 'legacy-bill-1',
+        order_id: 'legacy-order-1',
+        table_number: 3,
+        waiter_id: 'legacy-waiter-1',
+        waiter_name: 'Legado',
+        subtotal_cents: 5000,
+        fee_cents: 200,
+        total_cents: 5200,
+        commission_cents: 416,
+        commission_pct: 8,
+        closed_at: '2026-11-01T01:00:00.000Z',
+      },
+    ],
+  };
+  mem.set('garcom_db_v1', JSON.stringify(legacy));
+
+  // A primeira leitura dispara a migração.
+  const migrated = await store.listRestaurants();
+  check('migração: 1 restaurante criado', migrated.length === 1);
+  check('migração: restaurante é o Gosto Caseiro', migrated[0].name === 'Gosto Caseiro');
+  check(
+    'migração: restaurante ativo é o Gosto Caseiro',
+    (await store.getActiveRestaurant())?.name === 'Gosto Caseiro',
+  );
+  check(
+    'migração: dono antigo preservado',
+    (await store.getOwner())?.login === 'dono-legado',
+  );
+  check(
+    'migração: garçom antigo preservado',
+    (await store.listWaiters()).find((w) => w.login === 'legado') !== undefined,
+  );
+  check(
+    'migração: produto antigo preservado',
+    (await store.listProducts()).find((p) => p.name === 'Prato legado') !== undefined,
+  );
+  check('migração: venda antiga preservada', (await store.listClosedBills()).length === 1);
+  check(
+    'migração: valor da venda antiga (R$ 52,00)',
+    (await store.listClosedBills())[0].total_cents === 5200,
+  );
+  check('migração: taxa antiga preservada (4%)', (await store.getSettings()).service_fee_pct === 4);
+  check('migração: nº de mesas antigo (10)', (await store.getSettings()).table_count === 10);
+  check(
+    'migração: sequencial preservado (próximo Pedido Nº é 8)',
+    (await store.nextOrderNumber()) === 8,
+  );
+  check(
+    'migração: idempotente (segunda leitura não duplica)',
+    (await store.listRestaurants()).length === 1,
+  );
+
+  // Restaura o banco de verdade e o restaurante ativo.
+  mem.clear();
+  for (const [k, v] of snap) mem.set(k, v);
+  store.setActiveRestaurant(snapActive);
+  check(
+    'restauração: voltou pro Gosto Caseiro de verdade',
+    (await store.getActiveRestaurant())?.id === gostoId,
+  );
+  check(
+    'restauração: 2 garçons de verdade (Carlos e Ana)',
+    (await store.listWaiters()).length === 2,
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 12 · Administrador da plataforma: criação, login e lista sem financeiro */
+/* ------------------------------------------------------------------ */
+section('12 · Administrador da plataforma');
+{
+  check('sem admin no início', (await store.getPlatformAdmin()) === null);
+  const hash = await store.hashPassword('senha-admin-123');
+  const admin = await store.createPlatformAdmin('luis-admin', hash);
+  check('admin criado com login', admin.login === 'luis-admin');
+  check(
+    'hash da senha confere (login do admin)',
+    (await store.hashPassword('senha-admin-123')) === admin.password_hash,
+  );
+  check(
+    'senha errada não confere',
+    (await store.hashPassword('outra-senha')) !== admin.password_hash,
+  );
+  check(
+    'findPlatformAdminByLogin acha o admin',
+    (await store.findPlatformAdminByLogin('luis-admin'))?.id === admin.id,
+  );
+  check(
+    'getPlatformAdmin retorna o admin',
+    (await store.getPlatformAdmin())?.id === admin.id,
+  );
+  await throwsAsync(
+    () => store.createPlatformAdmin('outro-admin', hash),
+    'segundo admin é rejeitado',
+  );
+  await throwsAsync(
+    () => store.createPlatformAdmin('carlos', hash),
+    'admin com login de garçom é rejeitado',
+  );
+  await throwsAsync(
+    () => store.registerRestaurant({
+      restaurantName: 'Terceiro',
+      ownerName: 'X',
+      login: 'luis-admin',
+      passwordHash: hash,
+    }),
+    'cadastro com login do admin é rejeitado',
+  );
+  // O admin é SEPARADO: o login dele não é login de dono nem de garçom.
+  check(
+    'login do admin não é login de dono',
+    (await store.findOwnerByLogin('luis-admin')) === null,
+  );
+  check(
+    'login do admin não é login de garçom',
+    (await store.findWaiterByLogin('luis-admin')) === null,
+  );
+  check(
+    'login de dono não é login de admin',
+    (await store.findPlatformAdminByLogin('dono-luis')) === null,
+  );
+  check(
+    'login de garçom não é login de admin',
+    (await store.findPlatformAdminByLogin('carlos')) === null,
+  );
+
+  // A lista do admin: SÓ cadastro — nome, dono, data e nº de garçons.
+  // NENHUM dado financeiro: sem total vendido, sem valores, sem comissão.
+  const summaries = await store.listRestaurantSummaries();
+  check('lista do admin: 2 restaurantes', summaries.length === 2);
+  const gc = summaries.find((s) => s.restaurant.name === 'Gosto Caseiro');
+  const bella = summaries.find((s) => s.restaurant.name === 'Cantina Bella');
+  check('lista: Gosto Caseiro presente', gc !== undefined);
+  check('lista: dono do Gosto é o Luis', gc?.ownerName === 'Luis');
+  check('lista: Gosto tem 2 garçons', gc?.waiterCount === 2);
+  check('lista: data de cadastro do Gosto', typeof gc?.restaurant.created_at === 'string' && gc.restaurant.created_at.length > 0);
+  check('lista: Cantina Bella presente', bella !== undefined);
+  check('lista: dona da Bella é a Bela', bella?.ownerName === 'Bela');
+  check('lista: Bella tem 1 garçom', bella?.waiterCount === 1);
+  check(
+    'lista: resumo NÃO tem total vendido nem nenhum campo financeiro',
+    gc !== undefined &&
+      !('totalSoldCents' in gc) &&
+      !('total_cents' in gc) &&
+      !('sold' in gc) &&
+      !('commission' in gc) &&
+      !('totalVendido' in gc),
+  );
+  check(
+    'lista: resumo tem SÓ restaurante, dono e nº de garçons',
+    gc !== undefined &&
+      JSON.stringify(Object.keys(gc).sort()) ===
+        JSON.stringify(['ownerName', 'restaurant', 'waiterCount']),
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 13 · Checagens estáticas: admin e multi-restaurante no fonte        */
+/* ------------------------------------------------------------------ */
+section('13 · Fonte: admin e multi-restaurante');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  const notHas = (src, s, name) => check(name, !src.includes(s));
+  has(pageSrc, 'Área do administrador', 'login tem link "Área do administrador"');
+  has(pageSrc, 'AdminAuthView', 'componente de acesso do admin');
+  has(pageSrc, 'PlatformAdminView', 'componente da lista do admin');
+  has(pageSrc, 'handleAdminLogin', 'login do admin');
+  has(pageSrc, 'handleAdminCreate', 'primeiro acesso do admin');
+  has(pageSrc, 'PLATFORM_ADMIN_SESSION_KEY', 'sessão do admin separada');
+  has(pageSrc, "view === 'admin' && adminSession", 'área do admin só abre com sessão de admin');
+  has(pageSrc, 'Restaurantes cadastrados na plataforma', 'lista do admin: título');
+  has(pageSrc, 'garçons', 'lista do admin: nº de garçons');
+  has(pageSrc, 'Cadastrado em', 'lista do admin: data do cadastro');
+  notHas(pageSrc, 'totalSoldCents', 'admin: sem total vendido em lugar nenhum da tela');
+  notHas(pageSrc, 'handleOwnerCreate', 'tela: primeiro acesso do dono antigo removido');
+  notHas(pageSrc, 'RESTAURANT_NAME', 'tela: nome fixo do restaurante removido');
+  has(storeSrc, 'createPlatformAdmin', 'store: createPlatformAdmin');
+  has(storeSrc, 'findPlatformAdminByLogin', 'store: findPlatformAdminByLogin');
+  has(storeSrc, 'getPlatformAdmin', 'store: getPlatformAdmin');
+  has(storeSrc, 'listRestaurantSummaries', 'store: listRestaurantSummaries');
+  has(storeSrc, 'PLATFORM_ADMIN_SESSION_KEY', 'store: chave da sessão do admin');
+  has(sqlSrc, 'create table if not exists public.platform_admins', 'SQL: tabela platform_admins');
+  has(sqlSrc, 'admin_all_platform_admins', 'SQL: policy RLS platform_admins');
+  has(sqlSrc, 'garcom_all_restaurants', 'SQL: policy RLS restaurants');
+
+  // A lista do admin NÃO tem financeiro: o componente só mostra nome,
+  // dono, data e nº de garçons — nenhum valor, venda ou comissão.
+  const adminStart = pageSrc.indexOf('function PlatformAdminView');
+  const adminEnd = pageSrc.indexOf('type OwnerTab');
+  const adminSrc = pageSrc.slice(adminStart, adminEnd);
+  for (const s of ['total_cents', 'Total vendido', 'Comissão', 'commission', 'brl(']) {
+    check('lista do admin não mostra "' + s + '"', !adminSrc.includes(s));
+  }
+  check('lista do admin mostra o nome do restaurante', adminSrc.includes('s.restaurant.name'));
+  check('lista do admin mostra o dono', adminSrc.includes('s.ownerName'));
+  check('lista do admin mostra a data', adminSrc.includes('Cadastrado em'));
+  check('lista do admin mostra os garçons', adminSrc.includes('s.waiterCount'));
+
+  // O link do admin só existe na tela de login: nem o garçom (mesas)
+  // nem o dono (área dele) veem o link.
+  const loginStart = pageSrc.indexOf("if (view === 'login')");
+  const loginEnd = pageSrc.indexOf("if (view === 'admin' && adminSession)");
+  const loginSrc = pageSrc.slice(loginStart, loginEnd);
+  check('link do admin está na tela de login', loginSrc.includes('Área do administrador'));
+  const tablesStart = pageSrc.indexOf("if (view === 'tables')");
+  const tablesEnd = pageSrc.indexOf('/* ------------------------------ PEDIR ------------------------------ */');
+  check(
+    'garçom (mesas) não vê o link do admin',
+    !pageSrc.slice(tablesStart, tablesEnd).includes('Área do administrador'),
+  );
+  const ownerStart = pageSrc.indexOf("if (view === 'owner' && ownerSession)");
+  const ownerEnd = pageSrc.indexOf('if (!session)');
+  check(
+    'dono (área dele) não vê o link do admin',
+    !pageSrc.slice(ownerStart, ownerEnd).includes('Área do administrador'),
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 14 · Build + HTTP                                                   */
+/* ------------------------------------------------------------------ */
+section('14 · Build + HTTP');
 {
   const run = (cmd, args) =>
     new Promise((resolve) => {

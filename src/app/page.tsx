@@ -3,8 +3,10 @@
 import { Component, useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import * as store from '@/lib/store';
+import type { RestaurantSummary } from '@/lib/store';
 import {
   OWNER_SESSION_KEY,
+  PLATFORM_ADMIN_SESSION_KEY,
   SESSION_KEY,
   isSupabase,
   safeGet,
@@ -16,8 +18,8 @@ import type {
   DrinkType,
   OrderItem,
   OrderWithItems,
-  Owner,
   Product,
+  Restaurant,
   Settings,
   Waiter,
 } from '@/lib/types';
@@ -25,6 +27,7 @@ import type {
 type View =
   | 'setup'
   | 'login'
+  | 'register'
   | 'tables'
   | 'order'
   | 'serve'
@@ -36,7 +39,8 @@ type View =
   | 'owner'
   | 'owner-waiters'
   | 'owner-menu'
-  | 'owner-settings';
+  | 'owner-settings'
+  | 'admin';
 
 function brl(cents: number): string {
   return (cents / 100).toLocaleString('pt-BR', {
@@ -81,6 +85,8 @@ interface Session {
   id: string;
   name: string;
   login: string;
+  /** restaurante da sessão (garçom e dono); ausente no admin */
+  restaurant_id?: string;
 }
 
 interface TicketData {
@@ -140,9 +146,6 @@ class ErrorBoundary extends Component<
   }
 }
 
-/** Nome do restaurante no cabeçalho das vias da cozinha e do bar. */
-const RESTAURANT_NAME = 'Gosto Caseiro';
-
 /** Opções de como servir a bebida (escolha única, só pro bar). */
 const SERVE_OPTIONS = [
   'copo com limão e gelo',
@@ -191,12 +194,24 @@ function GarcomApp() {
   /* ------------------------------ DONO ------------------------------ */
   /** sessão do dono (área financeira — separada da sessão do garçom) */
   const [ownerSession, setOwnerSession] = useState<Session | null>(null);
-  /** tela de acesso do dono: login ou criação (null = login do garçom) */
-  const [ownerAuth, setOwnerAuth] = useState<'login' | 'setup' | null>(null);
-  const [hasOwner, setHasOwner] = useState(false);
+  /** tela de acesso do dono (null = login do garçom) */
+  const [ownerAuth, setOwnerAuth] = useState(false);
   const [waiters, setWaiters] = useState<Waiter[]>([]);
   /** contas fechadas p/ o financeiro do dono */
   const [ownerBills, setOwnerBills] = useState<ClosedBill[]>([]);
+
+  /* ------------------------------ RESTAURANTE ------------------------------ */
+  /** restaurante da sessão atual (garçom ou dono) — o nome dele vai
+   * no cabeçalho das vias e no topo da área do dono */
+  const [restaurant, setRestaurant] = useState<Restaurant | null>(null);
+
+  /* ------------------------------ ADMINISTRADOR DA PLATAFORMA ------------------------------ */
+  /** sessão do administrador da plataforma (só o Luis) — separada de
+   * garçom e de dono; sem ela, a área do administrador não abre */
+  const [adminSession, setAdminSession] = useState<Session | null>(null);
+  /** tela de acesso do admin: login ou criação (null = login do garçom) */
+  const [adminAuth, setAdminAuth] = useState<'login' | 'setup' | null>(null);
+  const [hasAdmin, setHasAdmin] = useState(false);
 
   const refreshOwner = useCallback(async () => {
     const [w, b, s, p] = await Promise.all([
@@ -233,33 +248,48 @@ function GarcomApp() {
   useEffect(() => {
     (async () => {
       try {
-        const [waiters, owner] = await Promise.all([
-          store.listWaiters(),
-          store.getOwner(),
-          refresh(),
-        ]);
-        setHasOwner(!!owner);
-        // Mesas abertas sem nenhum item (restos da regra antiga) voltam
-        // a ficar livres.
-        await store.cleanupEmptyOrders();
-        await refresh();
-        if (waiters.length === 0) {
-          setView('setup');
-          return;
+        setHasAdmin((await store.getPlatformAdmin()) !== null);
+        // Sessão do administrador da plataforma tem prioridade: ele não
+        // é garçom nem dono de nenhum restaurante.
+        const rawAdmin = safeGet(PLATFORM_ADMIN_SESSION_KEY);
+        if (rawAdmin) {
+          try {
+            const s = JSON.parse(rawAdmin) as Session;
+            const admin = await store.findPlatformAdminByLogin(s.login);
+            if (admin && admin.id === s.id) {
+              setAdminSession({
+                id: admin.id,
+                name: admin.login,
+                login: admin.login,
+              });
+              setView('admin');
+              return;
+            }
+          } catch {
+            /* sessão inválida: vai pro login */
+          }
         }
         // Sessão do dono (área financeira) tem prioridade sobre a do garçom.
         const rawOwner = safeGet(OWNER_SESSION_KEY);
-        if (rawOwner && owner) {
+        if (rawOwner) {
           try {
             const s = JSON.parse(rawOwner) as Session;
-            if (s.id === owner.id) {
+            const owner = await store.findOwnerByLogin(s.login);
+            const rid = owner?.restaurant_id ?? s.restaurant_id;
+            if (owner && owner.id === s.id && rid) {
+              store.setActiveRestaurant(rid);
+              setRestaurant(await store.getRestaurant(rid));
               setOwnerSession({
                 id: owner.id,
                 name: owner.name,
                 login: owner.login,
+                restaurant_id: rid,
               });
               await refreshOwner();
-              setView('owner');
+              // Restaurante novo, sem garçom ainda: primeiro acesso
+              // (criar o primeiro garçom + cardápio).
+              const ws = await store.listWaiters();
+              setView(ws.length === 0 ? 'setup' : 'owner');
               return;
             }
           } catch {
@@ -270,9 +300,22 @@ function GarcomApp() {
         if (raw) {
           try {
             const s = JSON.parse(raw) as Session;
-            const found = waiters.find((w) => w.id === s.id);
-            if (found) {
-              setSession({ id: found.id, name: found.name, login: found.login });
+            const waiter = await store.findWaiterByLogin(s.login);
+            const rid = waiter?.restaurant_id ?? s.restaurant_id;
+            if (waiter && waiter.id === s.id && rid) {
+              store.setActiveRestaurant(rid);
+              setRestaurant(await store.getRestaurant(rid));
+              setSession({
+                id: waiter.id,
+                name: waiter.name,
+                login: waiter.login,
+                restaurant_id: rid,
+              });
+              await refresh();
+              // Mesas abertas sem nenhum item (restos da regra antiga)
+              // voltam a ficar livres.
+              await store.cleanupEmptyOrders();
+              await refresh();
               setView('tables');
               return;
             }
@@ -302,7 +345,19 @@ function GarcomApp() {
       if (hash !== waiter.password_hash) {
         throw new Error('Login ou senha incorretos.');
       }
-      const s: Session = { id: waiter.id, name: waiter.name, login: waiter.login };
+      if (!waiter.restaurant_id) {
+        throw new Error(
+          'Restaurante não identificado — peça ao dono para rodar a migração do supabase.sql.',
+        );
+      }
+      store.setActiveRestaurant(waiter.restaurant_id);
+      setRestaurant(await store.getRestaurant(waiter.restaurant_id));
+      const s: Session = {
+        id: waiter.id,
+        name: waiter.name,
+        login: waiter.login,
+        restaurant_id: waiter.restaurant_id,
+      };
       setSession(s);
       safeSet(SESSION_KEY, JSON.stringify(s));
       await refresh();
@@ -319,6 +374,8 @@ function GarcomApp() {
     setCurrentOrder(null);
     setServeProduct(null);
     setMenuOpen(false);
+    store.setActiveRestaurant(null);
+    setRestaurant(null);
     safeRemove(SESSION_KEY);
     setView('login');
   }
@@ -335,12 +392,26 @@ function GarcomApp() {
       if (hash !== owner.password_hash) {
         throw new Error('Login ou senha incorretos.');
       }
-      const s: Session = { id: owner.id, name: owner.name, login: owner.login };
+      if (!owner.restaurant_id) {
+        throw new Error(
+          'Restaurante não identificado — rode a migração do supabase.sql.',
+        );
+      }
+      store.setActiveRestaurant(owner.restaurant_id);
+      setRestaurant(await store.getRestaurant(owner.restaurant_id));
+      const s: Session = {
+        id: owner.id,
+        name: owner.name,
+        login: owner.login,
+        restaurant_id: owner.restaurant_id,
+      };
       setOwnerSession(s);
       safeSet(OWNER_SESSION_KEY, JSON.stringify(s));
-      setOwnerAuth(null);
+      setOwnerAuth(false);
       await refreshOwner();
-      setView('owner');
+      // Restaurante novo, sem garçom ainda: primeiro acesso.
+      const ws = await store.listWaiters();
+      setView(ws.length === 0 ? 'setup' : 'owner');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível entrar.');
     } finally {
@@ -348,8 +419,21 @@ function GarcomApp() {
     }
   }
 
-  /** Primeiro acesso do dono: cria o usuário dele (só ele sabe). */
-  async function handleOwnerCreate(
+  function handleOwnerLogout() {
+    setOwnerSession(null);
+    setOwnerAuth(false);
+    store.setActiveRestaurant(null);
+    setRestaurant(null);
+    safeRemove(OWNER_SESSION_KEY);
+    setView('login');
+  }
+
+  /* ------------------------------ CADASTRO DO RESTAURANTE ------------------------------ */
+
+  /** Cadastro sozinho: cria o restaurante + o dono e já entra na área
+   * do dono, no primeiro acesso (criar o primeiro garçom + cardápio). */
+  async function handleRestaurantRegister(
+    restaurantName: string,
     name: string,
     login: string,
     password: string,
@@ -358,18 +442,66 @@ function GarcomApp() {
     setBusy(true);
     try {
       const hash = await store.hashPassword(password);
-      const owner: Owner = await store.createOwner(
-        name.trim(),
-        login.trim(),
-        hash,
-      );
-      const s: Session = { id: owner.id, name: owner.name, login: owner.login };
+      const { restaurant, owner } = await store.registerRestaurant({
+        restaurantName: restaurantName.trim(),
+        ownerName: name.trim(),
+        login: login.trim(),
+        passwordHash: hash,
+      });
+      const s: Session = {
+        id: owner.id,
+        name: owner.name,
+        login: owner.login,
+        restaurant_id: restaurant.id,
+      };
       setOwnerSession(s);
-      setHasOwner(true);
+      setRestaurant(restaurant);
       safeSet(OWNER_SESSION_KEY, JSON.stringify(s));
-      setOwnerAuth(null);
-      await refreshOwner();
-      setView('owner');
+      setView('setup');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Não foi possível cadastrar.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* ------------------------------ ADMINISTRADOR DA PLATAFORMA ------------------------------ */
+
+  async function handleAdminLogin(login: string, password: string) {
+    setError('');
+    setBusy(true);
+    try {
+      const admin = await store.findPlatformAdminByLogin(login.trim());
+      if (!admin) throw new Error('Login ou senha incorretos.');
+      const hash = await store.hashPassword(password);
+      if (hash !== admin.password_hash) {
+        throw new Error('Login ou senha incorretos.');
+      }
+      const s: Session = { id: admin.id, name: admin.login, login: admin.login };
+      setAdminSession(s);
+      safeSet(PLATFORM_ADMIN_SESSION_KEY, JSON.stringify(s));
+      setAdminAuth(null);
+      setView('admin');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Não foi possível entrar.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Primeiro acesso do administrador: cria o login dele (um só). */
+  async function handleAdminCreate(login: string, password: string) {
+    setError('');
+    setBusy(true);
+    try {
+      const hash = await store.hashPassword(password);
+      const admin = await store.createPlatformAdmin(login.trim(), hash);
+      const s: Session = { id: admin.id, name: admin.login, login: admin.login };
+      setAdminSession(s);
+      setHasAdmin(true);
+      safeSet(PLATFORM_ADMIN_SESSION_KEY, JSON.stringify(s));
+      setAdminAuth(null);
+      setView('admin');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível criar o acesso.');
     } finally {
@@ -377,10 +509,10 @@ function GarcomApp() {
     }
   }
 
-  function handleOwnerLogout() {
-    setOwnerSession(null);
-    setOwnerAuth(null);
-    safeRemove(OWNER_SESSION_KEY);
+  function handleAdminLogout() {
+    setAdminSession(null);
+    setAdminAuth(null);
+    safeRemove(PLATFORM_ADMIN_SESSION_KEY);
     setView('login');
   }
 
@@ -773,9 +905,39 @@ function GarcomApp() {
         products={products}
         onProductsChanged={refresh}
         onDone={() => {
-          setView('login');
+          // Dono recém-cadastrado volta pra área dele; garçom vai pro login.
+          setView(ownerSession ? 'owner' : 'login');
         }}
       />
+    );
+  }
+
+  /* ------------------------------ CADASTRO DO RESTAURANTE ------------------------------ */
+
+  if (view === 'register') {
+    return (
+      <div className="app">
+        <div className="hero">
+          <h1>Cadastrar meu restaurante</h1>
+          <p>
+            Crie o seu restaurante e o seu acesso de dono. Por enquanto o
+            acesso é liberado no cadastro, sem pagamento.
+          </p>
+        </div>
+        <div className="content">
+          {error && <div className="error">{error}</div>}
+          <RegisterRestaurantView
+            busy={busy}
+            onRegister={handleRestaurantRegister}
+            onCancel={() => setView('login')}
+          />
+          <div className="mode-badge">
+            {isSupabase
+              ? 'Banco de dados: Supabase (nuvem)'
+              : 'Banco de dados: local (neste aparelho)'}
+          </div>
+        </div>
+      </div>
     );
   }
 
@@ -792,22 +954,40 @@ function GarcomApp() {
           {error && <div className="error">{error}</div>}
           {ownerAuth ? (
             <OwnerAuthView
-              mode={ownerAuth}
               busy={busy}
               onLogin={handleOwnerLogin}
-              onCreate={handleOwnerCreate}
-              onCancel={() => setOwnerAuth(null)}
+              onCancel={() => setOwnerAuth(false)}
+            />
+          ) : adminAuth ? (
+            <AdminAuthView
+              mode={adminAuth}
+              busy={busy}
+              onLogin={handleAdminLogin}
+              onCreate={handleAdminCreate}
+              onCancel={() => setAdminAuth(null)}
             />
           ) : (
             <>
               <LoginForm busy={busy} onLogin={handleLogin} />
               <button
                 className="owner-link"
-                onClick={() =>
-                  setOwnerAuth(hasOwner ? 'login' : 'setup')
-                }
+                onClick={() => setOwnerAuth(true)}
               >
                 Sou o dono
+              </button>
+              <button
+                className="owner-link"
+                onClick={() => setView('register')}
+              >
+                Cadastrar meu restaurante
+              </button>
+              <button
+                className="owner-link admin-link"
+                onClick={() =>
+                  setAdminAuth(hasAdmin ? 'login' : 'setup')
+                }
+              >
+                Área do administrador
               </button>
             </>
           )}
@@ -821,6 +1001,16 @@ function GarcomApp() {
     );
   }
 
+  /* ------------------------------ ÁREA DO ADMINISTRADOR ------------------------------ */
+
+  if (view === 'admin' && adminSession) {
+    return (
+      <PlatformAdminView
+        onLogout={handleAdminLogout}
+      />
+    );
+  }
+
   /* ------------------------------ ÁREA DO DONO ------------------------------ */
 
   if (view === 'owner' && ownerSession) {
@@ -829,6 +1019,7 @@ function GarcomApp() {
         bills={ownerBills}
         waiters={waiters}
         settings={settings}
+        restaurantName={restaurant?.name ?? ''}
         onNavigate={setView}
         onLogout={handleOwnerLogout}
         onRefresh={refreshOwner}
@@ -842,6 +1033,7 @@ function GarcomApp() {
         waiters={waiters}
         bills={ownerBills}
         defaultPct={settings.default_commission_pct ?? 8}
+        restaurantName={restaurant?.name ?? ''}
         onChanged={refreshOwner}
         onNavigate={setView}
         onLogout={handleOwnerLogout}
@@ -853,6 +1045,7 @@ function GarcomApp() {
     return (
       <OwnerMenuView
         products={products}
+        restaurantName={restaurant?.name ?? ''}
         onChanged={refreshOwner}
         onNavigate={setView}
         onLogout={handleOwnerLogout}
@@ -864,6 +1057,7 @@ function GarcomApp() {
     return (
       <OwnerSettingsView
         settings={settings}
+        restaurantName={restaurant?.name ?? ''}
         onSaved={refreshOwner}
         onNavigate={setView}
         onLogout={handleOwnerLogout}
@@ -1391,6 +1585,7 @@ function GarcomApp() {
           <TicketsModal
             data={tickets}
             products={products}
+            restaurantName={restaurant?.name ?? 'Restaurante'}
             onClose={() => {
               setTickets(null);
               setView('tables');
@@ -1505,6 +1700,7 @@ function GarcomApp() {
           <TicketsModal
             data={tickets}
             products={products}
+            restaurantName={restaurant?.name ?? 'Restaurante'}
             onClose={() => setTickets(null)}
           />
         )}
@@ -2121,10 +2317,13 @@ function ConfirmModal({
 function TicketsModal({
   data,
   products,
+  restaurantName,
   onClose,
 }: {
   data: TicketData;
   products: Product[];
+  /** nome do restaurante no cabeçalho das vias */
+  restaurantName: string;
   onClose: () => void;
 }) {
   return (
@@ -2150,7 +2349,7 @@ function TicketsModal({
               <span className="t-logo" aria-hidden>
                 👨‍🍳
               </span>
-              <span className="t-name">{RESTAURANT_NAME}</span>
+              <span className="t-name">{restaurantName}</span>
               <span className="t-num">
                 Pedido Nº
                 <strong>
@@ -2202,7 +2401,7 @@ function TicketsModal({
               <span className="t-logo" aria-hidden>
                 👨‍🍳
               </span>
-              <span className="t-name">{RESTAURANT_NAME}</span>
+              <span className="t-name">{restaurantName}</span>
               <span className="t-num">
                 Pedido Nº
                 <strong>
@@ -2249,7 +2448,7 @@ function TicketsModal({
               <span className="t-logo" aria-hidden>
                 🧾
               </span>
-              <span className="t-name">{RESTAURANT_NAME}</span>
+              <span className="t-name">{restaurantName}</span>
               <span className="t-num">
                 Pedido Nº
                 <strong>
@@ -2455,65 +2654,34 @@ function filterBills(bills: ClosedBill[], period: Period): ClosedBill[] {
   return bills.filter((b) => new Date(b.closed_at) >= start);
 }
 
-/** Acesso do dono: login ou primeiro acesso (cria o usuário dele). */
+/** Acesso do dono: login na área financeira. O dono novo se cadastra
+ * em "Cadastrar meu restaurante", na tela de login. */
 function OwnerAuthView({
-  mode,
   busy,
   onLogin,
-  onCreate,
   onCancel,
 }: {
-  mode: 'login' | 'setup';
   busy: boolean;
   onLogin: (login: string, password: string) => void;
-  onCreate: (name: string, login: string, password: string) => void;
   onCancel: () => void;
 }) {
-  const [name, setName] = useState('');
   const [login, setLogin] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
   function submit() {
-    if (mode === 'setup') {
-      if (!name.trim() || !login.trim()) {
-        setError('Preencha o nome e o usuário.');
-        return;
-      }
-      if (password.length < 4) {
-        setError('A senha precisa ter no mínimo 4 caracteres.');
-        return;
-      }
-      onCreate(name, login, password);
-    } else {
-      if (!login.trim() || !password) {
-        setError('Preencha o usuário e a senha.');
-        return;
-      }
-      onLogin(login, password);
+    if (!login.trim() || !password) {
+      setError('Preencha o usuário e a senha.');
+      return;
     }
+    onLogin(login, password);
   }
 
   return (
     <div className="card">
-      <h2>{mode === 'setup' ? 'Acesso do dono' : 'Área do dono'}</h2>
-      <p className="hint">
-        {mode === 'setup'
-          ? 'Primeiro acesso: crie o seu usuário. Ele é só seu — não passe pra ninguém.'
-          : 'Entre com o seu usuário para ver o financeiro.'}
-      </p>
+      <h2>Área do dono</h2>
+      <p className="hint">Entre com o seu usuário para ver o financeiro.</p>
       {error && <div className="error">{error}</div>}
-      {mode === 'setup' && (
-        <div className="field">
-          <label htmlFor="owner-name">Seu nome</label>
-          <input
-            id="owner-name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Ex.: Luis"
-          />
-        </div>
-      )}
       <div className="field">
         <label htmlFor="owner-login">Usuário (só você sabe)</label>
         <input
@@ -2529,6 +2697,182 @@ function OwnerAuthView({
         <input
           id="owner-password"
           type="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Sua senha"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') submit();
+          }}
+        />
+      </div>
+      <button className="btn btn-purple" disabled={busy} onClick={submit}>
+        Entrar no financeiro
+      </button>
+      <div style={{ height: 10 }} />
+      <button className="btn btn-ghost" onClick={onCancel}>
+        Voltar ao login do garçom
+      </button>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Cadastro do restaurante (self-service)                              */
+/* ------------------------------------------------------------------ */
+
+function RegisterRestaurantView({
+  busy,
+  onRegister,
+  onCancel,
+}: {
+  busy: boolean;
+  onRegister: (
+    restaurantName: string,
+    name: string,
+    login: string,
+    password: string,
+  ) => void;
+  onCancel: () => void;
+}) {
+  const [restaurantName, setRestaurantName] = useState('');
+  const [name, setName] = useState('');
+  const [login, setLogin] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  function submit() {
+    if (!restaurantName.trim() || !name.trim() || !login.trim()) {
+      setError('Preencha o nome do restaurante, o seu nome e o usuário.');
+      return;
+    }
+    if (password.length < 4) {
+      setError('A senha precisa ter no mínimo 4 caracteres.');
+      return;
+    }
+    onRegister(restaurantName, name, login, password);
+  }
+
+  return (
+    <div className="card">
+      <h2>Seu restaurante</h2>
+      <p className="hint">
+        O login do dono é único na plataforma toda — se já existir um
+        acesso com esse usuário, escolha outro.
+      </p>
+      {error && <div className="error">{error}</div>}
+      <div className="field">
+        <label htmlFor="reg-restaurant">Nome do restaurante</label>
+        <input
+          id="reg-restaurant"
+          value={restaurantName}
+          onChange={(e) => setRestaurantName(e.target.value)}
+          placeholder="Ex.: Gosto Caseiro"
+        />
+      </div>
+      <div className="field">
+        <label htmlFor="reg-name">Seu nome</label>
+        <input
+          id="reg-name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Ex.: Luis"
+        />
+      </div>
+      <div className="field">
+        <label htmlFor="reg-login">Usuário (só você sabe)</label>
+        <input
+          id="reg-login"
+          autoComplete="username"
+          value={login}
+          onChange={(e) => setLogin(e.target.value)}
+          placeholder="Seu usuário"
+        />
+      </div>
+      <div className="field">
+        <label htmlFor="reg-password">Senha</label>
+        <input
+          id="reg-password"
+          type="password"
+          autoComplete="new-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Sua senha"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') submit();
+          }}
+        />
+      </div>
+      <button className="btn btn-purple" disabled={busy} onClick={submit}>
+        Cadastrar meu restaurante
+      </button>
+      <div style={{ height: 10 }} />
+      <button className="btn btn-ghost" onClick={onCancel}>
+        Voltar ao login
+      </button>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Área do administrador da plataforma                                 */
+/* ------------------------------------------------------------------ */
+
+/** Acesso do administrador: login ou primeiro acesso (cria o login dele). */
+function AdminAuthView({
+  mode,
+  busy,
+  onLogin,
+  onCreate,
+  onCancel,
+}: {
+  mode: 'login' | 'setup';
+  busy: boolean;
+  onLogin: (login: string, password: string) => void;
+  onCreate: (login: string, password: string) => void;
+  onCancel: () => void;
+}) {
+  const [login, setLogin] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  function submit() {
+    if (!login.trim() || !password) {
+      setError('Preencha o usuário e a senha.');
+      return;
+    }
+    if (mode === 'setup' && password.length < 4) {
+      setError('A senha precisa ter no mínimo 4 caracteres.');
+      return;
+    }
+    if (mode === 'setup') onCreate(login, password);
+    else onLogin(login, password);
+  }
+
+  return (
+    <div className="card">
+      <h2>Área do administrador</h2>
+      <p className="hint">
+        {mode === 'setup'
+          ? 'Primeiro acesso: crie o seu login de administrador da plataforma. Ele é só seu.'
+          : 'Entre com o seu login de administrador da plataforma.'}
+      </p>
+      {error && <div className="error">{error}</div>}
+      <div className="field">
+        <label htmlFor="admin-login">Usuário (só você sabe)</label>
+        <input
+          id="admin-login"
+          autoComplete="username"
+          value={login}
+          onChange={(e) => setLogin(e.target.value)}
+          placeholder="Seu usuário"
+        />
+      </div>
+      <div className="field">
+        <label htmlFor="admin-password">Senha</label>
+        <input
+          id="admin-password"
+          type="password"
           autoComplete={mode === 'setup' ? 'new-password' : 'current-password'}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
@@ -2539,12 +2883,91 @@ function OwnerAuthView({
         />
       </div>
       <button className="btn btn-purple" disabled={busy} onClick={submit}>
-        {mode === 'setup' ? 'Criar acesso do dono' : 'Entrar no financeiro'}
+        {mode === 'setup' ? 'Criar acesso do administrador' : 'Entrar'}
       </button>
       <div style={{ height: 10 }} />
       <button className="btn btn-ghost" onClick={onCancel}>
         Voltar ao login do garçom
       </button>
+    </div>
+  );
+}
+
+/**
+ * Lista de restaurantes cadastrados — SÓ cadastro: nome do restaurante,
+ * nome do dono, data do cadastro e número de garçons. NENHUM dado
+ * financeiro: o administrador não vê vendas, valores nem comissões.
+ */
+function PlatformAdminView({ onLogout }: { onLogout: () => void }) {
+  const [summaries, setSummaries] = useState<RestaurantSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      setSummaries(await store.listRestaurantSummaries());
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? e.message
+          : 'Não foi possível carregar os restaurantes.',
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <div className="app">
+      <header className="header">
+        <div>
+          <h1>Área do administrador</h1>
+          <div className="sub">Restaurantes cadastrados na plataforma</div>
+        </div>
+        <button className="icon-btn" onClick={onLogout}>
+          Sair
+        </button>
+      </header>
+      <div className="content">
+        {error && <div className="error">{error}</div>}
+        {loading ? (
+          <div className="loading">Carregando os restaurantes…</div>
+        ) : summaries.length === 0 ? (
+          <div className="empty">Nenhum restaurante cadastrado ainda.</div>
+        ) : (
+          <>
+            <div className="section-title">
+              Restaurantes ({summaries.length})
+            </div>
+            {summaries.map((s) => (
+              <div key={s.restaurant.id} className="item-row">
+                <div className="top">
+                  <span className="iname">{s.restaurant.name}</span>
+                  <span className="iline">
+                    {s.waiterCount === 1
+                      ? '1 garçom'
+                      : `${s.waiterCount} garçons`}
+                  </span>
+                </div>
+                <div className="note-line">
+                  Dono: {s.ownerName} · Cadastrado em{' '}
+                  {formatDateTime(s.restaurant.created_at)}
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+        <div style={{ height: 12 }} />
+        <button className="btn btn-ghost" onClick={() => void load()}>
+          Atualizar
+        </button>
+      </div>
     </div>
   );
 }
@@ -2556,12 +2979,14 @@ function OwnerHeader({
   title,
   sub,
   tab,
+  restaurantName,
   onNavigate,
   onLogout,
 }: {
   title: string;
   sub?: string;
   tab: OwnerTab;
+  restaurantName?: string;
   onNavigate: (v: View) => void;
   onLogout: () => void;
 }) {
@@ -2570,7 +2995,12 @@ function OwnerHeader({
       <header className="header">
         <div>
           <h1>{title}</h1>
-          {sub && <div className="sub">{sub}</div>}
+          {sub && (
+            <div className="sub">
+              {sub}
+              {restaurantName ? ` · ${restaurantName}` : ''}
+            </div>
+          )}
         </div>
         <button className="icon-btn" onClick={onLogout}>
           Sair
@@ -2612,6 +3042,7 @@ function OwnerDashboardView({
   bills,
   waiters,
   settings,
+  restaurantName,
   onNavigate,
   onLogout,
   onRefresh,
@@ -2619,6 +3050,7 @@ function OwnerDashboardView({
   bills: ClosedBill[];
   waiters: Waiter[];
   settings: Settings;
+  restaurantName: string;
   onNavigate: (v: View) => void;
   onLogout: () => void;
   onRefresh: () => Promise<void>;
@@ -2698,6 +3130,7 @@ function OwnerDashboardView({
         title="Área do dono"
         sub="Financeiro do restaurante"
         tab="dashboard"
+        restaurantName={restaurantName}
         onNavigate={onNavigate}
         onLogout={onLogout}
       />
@@ -2887,6 +3320,7 @@ function OwnerWaitersView({
   waiters,
   bills,
   defaultPct,
+  restaurantName,
   onChanged,
   onNavigate,
   onLogout,
@@ -2894,6 +3328,7 @@ function OwnerWaitersView({
   waiters: Waiter[];
   bills: ClosedBill[];
   defaultPct: number;
+  restaurantName: string;
   onChanged: () => Promise<void>;
   onNavigate: (v: View) => void;
   onLogout: () => void;
@@ -2969,6 +3404,7 @@ function OwnerWaitersView({
         title="Garçons"
         sub="Só o dono cadastra os garçons — depois passa o login e a senha pra cada um"
         tab="waiters"
+        restaurantName={restaurantName}
         onNavigate={onNavigate}
         onLogout={onLogout}
       />
@@ -3101,11 +3537,13 @@ function OwnerWaitersView({
 
 function OwnerMenuView({
   products,
+  restaurantName,
   onChanged,
   onNavigate,
   onLogout,
 }: {
   products: Product[];
+  restaurantName: string;
   onChanged: () => Promise<void>;
   onNavigate: (v: View) => void;
   onLogout: () => void;
@@ -3117,6 +3555,7 @@ function OwnerMenuView({
         title="Cardápio"
         sub="Só o dono muda o cardápio"
         tab="menu"
+        restaurantName={restaurantName}
         onNavigate={onNavigate}
         onLogout={onLogout}
       />
@@ -3149,11 +3588,13 @@ function OwnerMenuView({
 
 function OwnerSettingsView({
   settings,
+  restaurantName,
   onSaved,
   onNavigate,
   onLogout,
 }: {
   settings: Settings;
+  restaurantName: string;
   onSaved: () => Promise<void>;
   onNavigate: (v: View) => void;
   onLogout: () => void;
@@ -3207,6 +3648,7 @@ function OwnerSettingsView({
         title="Ajustes"
         sub="Taxa de serviço e comissão"
         tab="settings"
+        restaurantName={restaurantName}
         onNavigate={onNavigate}
         onLogout={onLogout}
       />

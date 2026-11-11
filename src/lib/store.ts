@@ -5,7 +5,9 @@ import type {
   OrderItem,
   OrderWithItems,
   Owner,
+  PlatformAdmin,
   Product,
+  Restaurant,
   Settings,
   Waiter,
 } from './types';
@@ -55,6 +57,9 @@ export const SESSION_KEY = 'garcom_session_v1';
 
 /** Sessão do dono logado (só guarda id + nome, nunca a senha). */
 export const OWNER_SESSION_KEY = 'dono_session_v1';
+
+/** Sessão do administrador da plataforma (só guarda id + login). */
+export const PLATFORM_ADMIN_SESSION_KEY = 'platform_admin_session_v1';
 
 /** % de comissão padrão dos garçons (exemplo do dono: vendeu R$ 200,
  * 8% = R$ 16 dele, R$ 184 do restaurante). */
@@ -110,6 +115,42 @@ export const DEFAULT_SETTINGS: Settings = {
   default_commission_pct: DEFAULT_COMMISSION_PCT,
   day_closed_date: null,
 };
+
+/* ------------------------------------------------------------------ */
+/* Restaurante ativo — todo dado lido ou gravado é filtrado por ele.  */
+/* A sessão (garçom ou dono) define o restaurante; sem restaurante    */
+/* ativo, as leituras voltam vazias e as escritas são rejeitadas.     */
+/* ------------------------------------------------------------------ */
+
+export const ACTIVE_RESTAURANT_KEY = 'restaurant_active_v1';
+
+let activeRestaurantId: string | null = null;
+
+/** id do restaurante da sessão atual (null = ninguém logado). */
+export function getActiveRestaurantId(): string | null {
+  if (activeRestaurantId) return activeRestaurantId;
+  const saved = safeGet(ACTIVE_RESTAURANT_KEY);
+  if (saved) {
+    activeRestaurantId = saved;
+    return saved;
+  }
+  return null;
+}
+
+/** Troca o restaurante ativo (no login e no cadastro); null = sair. */
+export function setActiveRestaurant(id: string | null): void {
+  activeRestaurantId = id;
+  if (id) safeSet(ACTIVE_RESTAURANT_KEY, id);
+  else safeRemove(ACTIVE_RESTAURANT_KEY);
+}
+
+function requireRestaurantId(): string {
+  const id = getActiveRestaurantId();
+  if (!id) {
+    throw new Error('Nenhum restaurante selecionado. Entre com o seu acesso.');
+  }
+  return id;
+}
 
 /* ------------------------------------------------------------------ */
 /* Finalizar dia — o dia encerrado reabre sozinho às 9h do dia seguinte */
@@ -172,62 +213,128 @@ export async function reopenDay(): Promise<Settings> {
 /* ------------------------------------------------------------------ */
 
 interface LocalDb {
+  restaurants: Restaurant[];
+  /** donos — um por restaurante */
+  owners: Owner[];
   waiters: Waiter[];
-  /** dono do restaurante (um só; null até o primeiro acesso do dono) */
-  owner: Owner | null;
   products: Product[];
-  settings: Settings;
+  /** configurações POR restaurante (antes era uma única linha) */
+  settingsByRestaurant: Record<string, Settings>;
   orders: Order[];
   items: OrderItem[];
   bills: ClosedBill[];
-  /** contador do número do pedido (sequencial) */
-  order_seq: number;
+  /** administrador da plataforma — um só, separado dos donos */
+  platformAdmins: PlatformAdmin[];
 }
 
 const LOCAL_KEY = 'garcom_db_v1';
 
-function loadLocal(): LocalDb {
-  const raw = safeGet(LOCAL_KEY);
-  if (raw) {
-    try {
-      const d = JSON.parse(raw) as Partial<LocalDb>;
-      return {
-        waiters: (d.waiters ?? []).map((w) => ({
-          ...w,
-          commission_pct: w.commission_pct ?? DEFAULT_COMMISSION_PCT,
-        })),
-        owner: d.owner ?? null,
-        products: d.products ?? [],
-        settings: {
-          ...DEFAULT_SETTINGS,
-          ...(d.settings ?? {}),
-          default_commission_pct:
-            d.settings?.default_commission_pct ?? DEFAULT_COMMISSION_PCT,
-          day_closed_date: d.settings?.day_closed_date ?? null,
-        },
-        orders: d.orders ?? [],
-        items: d.items ?? [],
-        bills: (d.bills ?? []).map((b) => ({
-          ...b,
-          commission_cents: b.commission_cents ?? 0,
-          commission_pct: b.commission_pct ?? 0,
-        })),
-        order_seq: d.order_seq ?? d.settings?.order_seq ?? 0,
-      };
-    } catch {
-      /* banco local corrompido: começa do zero */
-    }
-  }
+function emptyLocalDb(): LocalDb {
   return {
+    restaurants: [],
+    owners: [],
     waiters: [],
-    owner: null,
     products: [],
-    settings: { ...DEFAULT_SETTINGS },
+    settingsByRestaurant: {},
     orders: [],
     items: [],
     bills: [],
-    order_seq: 0,
+    platformAdmins: [],
   };
+}
+
+function loadLocal(): LocalDb {
+  const raw = safeGet(LOCAL_KEY);
+  if (!raw) return emptyLocalDb();
+  try {
+    const d = JSON.parse(raw) as Partial<LocalDb> & {
+      /** formato antigo: um único dono */
+      owner?: Owner | null;
+      /** formato antigo: uma única configuração */
+      settings?: Settings;
+      /** formato antigo: contador do pedido fora das configurações */
+      order_seq?: number;
+    };
+    const db: LocalDb = {
+      restaurants: d.restaurants ?? [],
+      owners: d.owners ?? [],
+      waiters: (d.waiters ?? []).map((w) => ({
+        ...w,
+        commission_pct: w.commission_pct ?? DEFAULT_COMMISSION_PCT,
+      })),
+      products: d.products ?? [],
+      settingsByRestaurant: d.settingsByRestaurant ?? {},
+      orders: d.orders ?? [],
+      items: d.items ?? [],
+      bills: (d.bills ?? []).map((b) => ({
+        ...b,
+        commission_cents: b.commission_cents ?? 0,
+        commission_pct: b.commission_pct ?? 0,
+      })),
+      platformAdmins: d.platformAdmins ?? [],
+    };
+    // Migração de bancos locais antigos (de antes do multi-restaurante):
+    // tudo que existia pertencia ao Gosto Caseiro — nada se perde, só
+    // ganha o restaurante. Roda uma única vez, na primeira leitura.
+    if (db.restaurants.length === 0) {
+      const legacyOwner = d.owner ?? null;
+      const legacySettings = d.settings;
+      const hasLegacyData =
+        legacyOwner !== null ||
+        db.waiters.length > 0 ||
+        db.products.length > 0 ||
+        db.orders.length > 0 ||
+        db.items.length > 0 ||
+        db.bills.length > 0 ||
+        (legacySettings !== undefined &&
+          (legacySettings.service_fee_pct !== DEFAULT_SETTINGS.service_fee_pct ||
+            legacySettings.table_count !== DEFAULT_SETTINGS.table_count ||
+            (legacySettings.default_commission_pct ?? DEFAULT_COMMISSION_PCT) !==
+              DEFAULT_COMMISSION_PCT ||
+            (legacySettings.day_closed_date ?? null) !== null ||
+            (d.order_seq ?? 0) > 0));
+      if (hasLegacyData) {
+        const gc: Restaurant = {
+          id: newId(),
+          name: 'Gosto Caseiro',
+          created_at: nowIso(),
+        };
+        db.restaurants = [gc];
+        if (legacyOwner) {
+          db.owners = [{ ...legacyOwner, restaurant_id: gc.id }];
+        }
+        db.waiters.forEach((w) => {
+          w.restaurant_id = gc.id;
+        });
+        db.products.forEach((p) => {
+          p.restaurant_id = gc.id;
+        });
+        db.orders.forEach((o) => {
+          o.restaurant_id = gc.id;
+        });
+        db.items.forEach((i) => {
+          i.restaurant_id = gc.id;
+        });
+        db.bills.forEach((b) => {
+          b.restaurant_id = gc.id;
+        });
+        db.settingsByRestaurant = {
+          [gc.id]: {
+            ...DEFAULT_SETTINGS,
+            ...(legacySettings ?? {}),
+            restaurant_id: gc.id,
+            order_seq: d.order_seq ?? legacySettings?.order_seq ?? 0,
+          },
+        };
+        setActiveRestaurant(gc.id);
+        saveLocal(db);
+      }
+    }
+    return db;
+  } catch {
+    /* banco local corrompido: começa do zero */
+    return emptyLocalDb();
+  }
 }
 
 function saveLocal(db: LocalDb): void {
@@ -243,23 +350,271 @@ function sb(): SupabaseClient {
   return supabase;
 }
 
-export async function getSettings(): Promise<Settings> {
+/* ------------------------------------------------------------------ */
+/* Restaurantes e cadastro (self-service)                              */
+/* ------------------------------------------------------------------ */
+
+export async function listRestaurants(): Promise<Restaurant[]> {
+  if (!isSupabase) {
+    return [...loadLocal().restaurants].sort((a, b) =>
+      a.created_at.localeCompare(b.created_at),
+    );
+  }
+  const { data, error } = await sb()
+    .from('restaurants')
+    .select('*')
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as Restaurant[];
+}
+
+export async function getRestaurant(id: string): Promise<Restaurant | null> {
+  if (!isSupabase) {
+    return loadLocal().restaurants.find((r) => r.id === id) ?? null;
+  }
+  const { data, error } = await sb()
+    .from('restaurants')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as Restaurant | null) ?? null;
+}
+
+export async function getActiveRestaurant(): Promise<Restaurant | null> {
+  const id = getActiveRestaurantId();
+  if (!id) return null;
+  return getRestaurant(id);
+}
+
+/**
+ * Resumo por restaurante para a área do administrador da plataforma:
+ * nome do restaurante, nome do dono, data do cadastro e número de
+ * garçons. NENHUM dado financeiro — o administrador não vê vendas,
+ * valores nem comissões (o financeiro é só do dono de cada restaurante).
+ */
+export interface RestaurantSummary {
+  restaurant: Restaurant;
+  ownerName: string;
+  waiterCount: number;
+}
+
+export async function listRestaurantSummaries(): Promise<RestaurantSummary[]> {
+  const restaurants = await listRestaurants();
   if (!isSupabase) {
     const db = loadLocal();
-    return { ...db.settings, order_seq: db.order_seq ?? 0 };
+    return restaurants.map((r) => ({
+      restaurant: r,
+      ownerName:
+        db.owners.find((o) => o.restaurant_id === r.id)?.name ?? '—',
+      waiterCount: db.waiters.filter((w) => w.restaurant_id === r.id).length,
+    }));
   }
+  const [{ data: owners }, { data: waiters }] = await Promise.all([
+    sb().from('owners').select('restaurant_id, name'),
+    sb().from('waiters').select('restaurant_id'),
+  ]);
+  const ownerByRestaurant = new Map<string, string>();
+  for (const o of (owners ?? []) as { restaurant_id: string; name: string }[]) {
+    if (o.restaurant_id) ownerByRestaurant.set(o.restaurant_id, o.name);
+  }
+  const waitersByRestaurant = new Map<string, number>();
+  for (const w of (waiters ?? []) as { restaurant_id: string }[]) {
+    if (!w.restaurant_id) continue;
+    waitersByRestaurant.set(
+      w.restaurant_id,
+      (waitersByRestaurant.get(w.restaurant_id) ?? 0) + 1,
+    );
+  }
+  return restaurants.map((r) => ({
+    restaurant: r,
+    ownerName: ownerByRestaurant.get(r.id) ?? '—',
+    waiterCount: waitersByRestaurant.get(r.id) ?? 0,
+  }));
+}
+
+/**
+ * true quando o login já é usado por alguém na plataforma toda
+ * (dono, garçom ou administrador) — o login é único na plataforma.
+ */
+export async function isLoginTaken(login: string): Promise<boolean> {
+  const [owner, waiter, admin] = await Promise.all([
+    findOwnerByLogin(login),
+    findWaiterByLogin(login),
+    findPlatformAdminByLogin(login),
+  ]);
+  return Boolean(owner || waiter || admin);
+}
+
+/**
+ * Cadastro sozinho (self-service): o dono informa o nome do
+ * restaurante, o nome dele, o login e a senha; cria o restaurante +
+ * o dono e já deixa o restaurante ativo. Por enquanto o acesso é
+ * liberado no cadastro, sem pagamento dentro do sistema.
+ */
+export async function registerRestaurant(input: {
+  restaurantName: string;
+  ownerName: string;
+  login: string;
+  passwordHash: string;
+}): Promise<{ restaurant: Restaurant; owner: Owner }> {
+  const login = input.login.trim();
+  if (await isLoginTaken(login)) {
+    throw new Error(
+      'Já existe um acesso com esse login na plataforma. Escolha outro login.',
+    );
+  }
+  const restaurant: Restaurant = {
+    id: newId(),
+    name: input.restaurantName.trim(),
+    created_at: nowIso(),
+  };
+  const owner: Owner = {
+    id: newId(),
+    restaurant_id: restaurant.id,
+    name: input.ownerName.trim(),
+    login,
+    password_hash: input.passwordHash,
+    created_at: nowIso(),
+  };
+  if (!isSupabase) {
+    const db = loadLocal();
+    db.restaurants.push(restaurant);
+    db.owners.push(owner);
+    db.settingsByRestaurant[restaurant.id] = {
+      ...DEFAULT_SETTINGS,
+      restaurant_id: restaurant.id,
+    };
+    saveLocal(db);
+    setActiveRestaurant(restaurant.id);
+    return { restaurant, owner };
+  }
+  const { error: rErr } = await sb().from('restaurants').insert({
+    id: restaurant.id,
+    name: restaurant.name,
+  });
+  if (rErr) throw rErr;
+  const { data, error } = await sb()
+    .from('owners')
+    .insert({
+      id: owner.id,
+      restaurant_id: restaurant.id,
+      name: owner.name,
+      login: owner.login,
+      password_hash: owner.password_hash,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  setActiveRestaurant(restaurant.id);
+  return { restaurant, owner: data as Owner };
+}
+
+/* ------------------------------------------------------------------ */
+/* Administrador da plataforma (só o Luis) — separado dos donos.      */
+/* ------------------------------------------------------------------ */
+
+export async function getPlatformAdmin(): Promise<PlatformAdmin | null> {
+  if (!isSupabase) return loadLocal().platformAdmins[0] ?? null;
+  const { data, error } = await sb()
+    .from('platform_admins')
+    .select('*')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as PlatformAdmin | null) ?? null;
+}
+
+/**
+ * Primeiro acesso do administrador: cria o login dele (um só).
+ * Não é dono nem garçom — não entra em nenhum restaurante.
+ */
+export async function createPlatformAdmin(
+  login: string,
+  passwordHash: string,
+): Promise<PlatformAdmin> {
+  const cleanLogin = login.trim();
+  if (await isLoginTaken(cleanLogin)) {
+    throw new Error(
+      'Já existe um acesso com esse login na plataforma. Escolha outro login.',
+    );
+  }
+  const admin: PlatformAdmin = {
+    id: newId(),
+    login: cleanLogin,
+    password_hash: passwordHash,
+    created_at: nowIso(),
+  };
+  if (!isSupabase) {
+    const db = loadLocal();
+    if (db.platformAdmins.length > 0) {
+      throw new Error('Já existe um administrador da plataforma.');
+    }
+    db.platformAdmins.push(admin);
+    saveLocal(db);
+    return admin;
+  }
+  const existing = await getPlatformAdmin();
+  if (existing) {
+    throw new Error('Já existe um administrador da plataforma.');
+  }
+  const { data, error } = await sb()
+    .from('platform_admins')
+    .insert({
+      id: admin.id,
+      login: admin.login,
+      password_hash: admin.password_hash,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data as PlatformAdmin;
+}
+
+export async function findPlatformAdminByLogin(
+  login: string,
+): Promise<PlatformAdmin | null> {
+  if (!isSupabase) {
+    return loadLocal().platformAdmins.find((a) => a.login === login) ?? null;
+  }
+  const { data, error } = await sb()
+    .from('platform_admins')
+    .select('*')
+    .eq('login', login)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as PlatformAdmin | null) ?? null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Configurações — uma linha POR restaurante.                          */
+/* ------------------------------------------------------------------ */
+
+export async function getSettings(): Promise<Settings> {
+  if (!isSupabase) {
+    const id = getActiveRestaurantId();
+    if (!id) return { ...DEFAULT_SETTINGS };
+    const db = loadLocal();
+    return {
+      ...DEFAULT_SETTINGS,
+      ...(db.settingsByRestaurant[id] ?? {}),
+      restaurant_id: id,
+    };
+  }
+  const rid = requireRestaurantId();
   const { data, error } = await sb()
     .from('settings')
     .select('*')
-    .eq('id', 1)
+    .eq('restaurant_id', rid)
     .maybeSingle();
   if (error) throw error;
   if (!data) {
     const { error: insErr } = await sb()
       .from('settings')
-      .insert({ id: 1, ...DEFAULT_SETTINGS });
+      .insert({ restaurant_id: rid, ...DEFAULT_SETTINGS });
     if (insErr) throw insErr;
-    return { ...DEFAULT_SETTINGS };
+    return { ...DEFAULT_SETTINGS, restaurant_id: rid };
   }
   return {
     service_fee_pct: data.service_fee_pct,
@@ -268,30 +623,45 @@ export async function getSettings(): Promise<Settings> {
     default_commission_pct:
       data.default_commission_pct ?? DEFAULT_COMMISSION_PCT,
     day_closed_date: data.day_closed_date ?? null,
+    restaurant_id: rid,
   };
 }
 
 /**
- * Próximo número do pedido ("Pedido Nº 0001", sequencial, persistente).
- * Modo local: contador no banco local. Supabase: incremento atômico via
- * função SQL next_order_number(); se o supabase.sql antigo ainda não
- * tiver a função, cai no leitura-e-gravação da linha de settings.
+ * Próximo número do pedido ("Pedido Nº 0001", sequencial, persistente)
+ * — POR restaurante: cada restaurante tem o seu próprio sequencial.
+ * Modo local: contador nas configurações do restaurante. Supabase:
+ * incremento atômico via função SQL next_order_number(restaurant_id);
+ * se o supabase.sql antigo ainda não tiver a função, cai no
+ * leitura-e-gravação da linha de settings do restaurante.
  */
 export async function nextOrderNumber(): Promise<number> {
   if (!isSupabase) {
     const db = loadLocal();
-    const n = (db.order_seq ?? 0) + 1;
-    db.order_seq = n;
+    const id = getActiveRestaurantId();
+    if (!id) {
+      throw new Error('Nenhum restaurante selecionado.');
+    }
+    const s: Settings = {
+      ...DEFAULT_SETTINGS,
+      ...(db.settingsByRestaurant[id] ?? {}),
+      restaurant_id: id,
+    };
+    const n = (s.order_seq ?? 0) + 1;
+    db.settingsByRestaurant[id] = { ...s, order_seq: n };
     saveLocal(db);
     return n;
   }
-  const { data, error } = await sb().rpc('next_order_number');
+  const rid = requireRestaurantId();
+  const { data, error } = await sb().rpc('next_order_number', {
+    p_restaurant_id: rid,
+  });
   if (!error && typeof data === 'number') return data;
   const s = await getSettings();
   const n = (s.order_seq ?? 0) + 1;
   const { error: upErr } = await sb()
     .from('settings')
-    .upsert({ id: 1, order_seq: n });
+    .upsert({ restaurant_id: rid, order_seq: n }, { onConflict: 'restaurant_id' });
   if (upErr) throw upErr;
   return n;
 }
@@ -301,26 +671,37 @@ export async function saveSettings(s: Settings): Promise<void> {
   // não editou (ex.: order_seq, default_commission_pct).
   const merged: Settings = { ...(await getSettings()), ...s };
   if (!isSupabase) {
+    const id = getActiveRestaurantId();
+    if (!id) {
+      throw new Error('Nenhum restaurante selecionado.');
+    }
     const db = loadLocal();
-    db.settings = merged;
+    db.settingsByRestaurant[id] = { ...merged, restaurant_id: id };
     saveLocal(db);
     return;
   }
+  const rid = requireRestaurantId();
   const { error } = await sb()
     .from('settings')
-    .upsert({ id: 1, ...merged });
+    .upsert({ restaurant_id: rid, ...merged }, { onConflict: 'restaurant_id' });
   if (error) throw error;
 }
 
 /* ------------------------------------------------------------------ */
-/* Dono (um só) — login próprio de administrador do financeiro.       */
+/* Dono — um por restaurante; login próprio de administrador.          */
 /* ------------------------------------------------------------------ */
 
 export async function getOwner(): Promise<Owner | null> {
-  if (!isSupabase) return loadLocal().owner;
+  if (!isSupabase) {
+    const id = getActiveRestaurantId();
+    if (!id) return null;
+    return loadLocal().owners.find((o) => o.restaurant_id === id) ?? null;
+  }
+  const rid = requireRestaurantId();
   const { data, error } = await sb()
     .from('owners')
     .select('*')
+    .eq('restaurant_id', rid)
     .order('created_at', { ascending: true })
     .limit(1)
     .maybeSingle();
@@ -333,17 +714,27 @@ export async function createOwner(
   login: string,
   passwordHash: string,
 ): Promise<Owner> {
+  const cleanLogin = login.trim();
+  if (await isLoginTaken(cleanLogin)) {
+    throw new Error(
+      'Já existe um acesso com esse login na plataforma. Escolha outro login.',
+    );
+  }
+  const rid = requireRestaurantId();
   const owner: Owner = {
     id: newId(),
-    name,
-    login,
+    restaurant_id: rid,
+    name: name.trim(),
+    login: cleanLogin,
     password_hash: passwordHash,
     created_at: nowIso(),
   };
   if (!isSupabase) {
     const db = loadLocal();
-    if (db.owner) throw new Error('Já existe um dono cadastrado.');
-    db.owner = owner;
+    if (db.owners.some((o) => o.restaurant_id === rid)) {
+      throw new Error('Já existe um dono cadastrado.');
+    }
+    db.owners.push(owner);
     saveLocal(db);
     return owner;
   }
@@ -353,6 +744,7 @@ export async function createOwner(
     .from('owners')
     .insert({
       id: owner.id,
+      restaurant_id: owner.restaurant_id,
       name: owner.name,
       login: owner.login,
       password_hash: owner.password_hash,
@@ -365,8 +757,7 @@ export async function createOwner(
 
 export async function findOwnerByLogin(login: string): Promise<Owner | null> {
   if (!isSupabase) {
-    const owner = loadLocal().owner;
-    return owner && owner.login === login ? owner : null;
+    return loadLocal().owners.find((o) => o.login === login) ?? null;
   }
   const { data, error } = await sb()
     .from('owners')
@@ -378,10 +769,16 @@ export async function findOwnerByLogin(login: string): Promise<Owner | null> {
 }
 
 export async function listWaiters(): Promise<Waiter[]> {
-  if (!isSupabase) return loadLocal().waiters;
+  if (!isSupabase) {
+    const id = getActiveRestaurantId();
+    if (!id) return [];
+    return loadLocal().waiters.filter((w) => w.restaurant_id === id);
+  }
+  const rid = requireRestaurantId();
   const { data, error } = await sb()
     .from('waiters')
     .select('*')
+    .eq('restaurant_id', rid)
     .order('created_at', { ascending: true });
   if (error) throw error;
   return (data ?? []) as Waiter[];
@@ -393,22 +790,27 @@ export async function createWaiter(
   passwordHash: string,
   commissionPct?: number,
 ): Promise<Waiter> {
+  const cleanLogin = login.trim();
+  if (await isLoginTaken(cleanLogin)) {
+    throw new Error(
+      'Já existe um acesso com esse login na plataforma. Escolha outro login.',
+    );
+  }
+  const rid = requireRestaurantId();
   const pct =
     commissionPct ?? (await getSettings()).default_commission_pct ??
     DEFAULT_COMMISSION_PCT;
   const waiter: Waiter = {
     id: newId(),
-    name,
-    login,
+    restaurant_id: rid,
+    name: name.trim(),
+    login: cleanLogin,
     password_hash: passwordHash,
     commission_pct: pct,
     created_at: nowIso(),
   };
   if (!isSupabase) {
     const db = loadLocal();
-    if (db.waiters.some((w) => w.login === login)) {
-      throw new Error('Já existe um garçom com esse login.');
-    }
     db.waiters.push(waiter);
     saveLocal(db);
     return waiter;
@@ -417,8 +819,9 @@ export async function createWaiter(
     .from('waiters')
     .insert({
       id: waiter.id,
+      restaurant_id: waiter.restaurant_id,
       name,
-      login,
+      login: cleanLogin,
       password_hash: passwordHash,
       commission_pct: pct,
     })
@@ -430,12 +833,19 @@ export async function createWaiter(
 
 export async function getWaiterById(id: string): Promise<Waiter | null> {
   if (!isSupabase) {
-    return loadLocal().waiters.find((w) => w.id === id) ?? null;
+    const rid = getActiveRestaurantId();
+    return (
+      loadLocal().waiters.find(
+        (w) => w.id === id && (!rid || w.restaurant_id === rid),
+      ) ?? null
+    );
   }
+  const rid = requireRestaurantId();
   const { data, error } = await sb()
     .from('waiters')
     .select('*')
     .eq('id', id)
+    .eq('restaurant_id', rid)
     .maybeSingle();
   if (error) throw error;
   return (data as Waiter | null) ?? null;
@@ -448,7 +858,10 @@ export async function updateWaiter(
 ): Promise<void> {
   if (!isSupabase) {
     const db = loadLocal();
-    const w = db.waiters.find((x) => x.id === id);
+    const rid = getActiveRestaurantId();
+    const w = db.waiters.find(
+      (x) => x.id === id && (!rid || x.restaurant_id === rid),
+    );
     if (!w) return;
     if (patch.name !== undefined) w.name = patch.name;
     if (patch.commission_pct !== undefined)
@@ -458,7 +871,12 @@ export async function updateWaiter(
     saveLocal(db);
     return;
   }
-  const { error } = await sb().from('waiters').update(patch).eq('id', id);
+  const rid = requireRestaurantId();
+  const { error } = await sb()
+    .from('waiters')
+    .update(patch)
+    .eq('id', id)
+    .eq('restaurant_id', rid);
   if (error) throw error;
 }
 
@@ -481,11 +899,19 @@ export async function deleteWaiter(id: string): Promise<void> {
   }
   if (!isSupabase) {
     const db = loadLocal();
-    db.waiters = db.waiters.filter((w) => w.id !== id);
+    const rid = getActiveRestaurantId();
+    db.waiters = db.waiters.filter(
+      (w) => !(w.id === id && (!rid || w.restaurant_id === rid)),
+    );
     saveLocal(db);
     return;
   }
-  const { error } = await sb().from('waiters').delete().eq('id', id);
+  const rid = requireRestaurantId();
+  const { error } = await sb()
+    .from('waiters')
+    .delete()
+    .eq('id', id)
+    .eq('restaurant_id', rid);
   if (error) throw error;
 }
 
@@ -504,15 +930,19 @@ export async function findWaiterByLogin(login: string): Promise<Waiter | null> {
 
 export async function listProducts(): Promise<Product[]> {
   if (!isSupabase) {
-    const p = loadLocal().products;
+    const id = getActiveRestaurantId();
+    if (!id) return [];
+    const p = loadLocal().products.filter((x) => x.restaurant_id === id);
     return [...p].sort((a, b) =>
       a.category.localeCompare(b.category, 'pt-BR') ||
       a.name.localeCompare(b.name, 'pt-BR'),
     );
   }
+  const rid = requireRestaurantId();
   const { data, error } = await sb()
     .from('products')
     .select('*')
+    .eq('restaurant_id', rid)
     .order('category', { ascending: true })
     .order('name', { ascending: true });
   if (error) throw error;
@@ -527,8 +957,10 @@ export async function createProduct(input: {
   drink_type?: string;
   description?: string;
 }): Promise<Product> {
+  const rid = requireRestaurantId();
   const product: Product = {
     id: newId(),
+    restaurant_id: rid,
     name: input.name,
     price_cents: input.price_cents,
     category: input.category,
@@ -547,6 +979,7 @@ export async function createProduct(input: {
     .from('products')
     .insert({
       id: product.id,
+      restaurant_id: rid,
       name: product.name,
       price_cents: product.price_cents,
       category: product.category,
@@ -563,11 +996,19 @@ export async function createProduct(input: {
 export async function deleteProduct(id: string): Promise<void> {
   if (!isSupabase) {
     const db = loadLocal();
-    db.products = db.products.filter((p) => p.id !== id);
+    const rid = getActiveRestaurantId();
+    db.products = db.products.filter(
+      (p) => !(p.id === id && (!rid || p.restaurant_id === rid)),
+    );
     saveLocal(db);
     return;
   }
-  const { error } = await sb().from('products').delete().eq('id', id);
+  const rid = requireRestaurantId();
+  const { error } = await sb()
+    .from('products')
+    .delete()
+    .eq('id', id)
+    .eq('restaurant_id', rid);
   if (error) throw error;
 }
 
@@ -584,31 +1025,43 @@ export async function updateProduct(
 ): Promise<void> {
   if (!isSupabase) {
     const db = loadLocal();
-    const p = db.products.find((x) => x.id === id);
+    const rid = getActiveRestaurantId();
+    const p = db.products.find(
+      (x) => x.id === id && (!rid || x.restaurant_id === rid),
+    );
     if (!p) return;
     Object.assign(p, patch);
     saveLocal(db);
     return;
   }
-  const { error } = await sb().from('products').update(patch).eq('id', id);
+  const rid = requireRestaurantId();
+  const { error } = await sb()
+    .from('products')
+    .update(patch)
+    .eq('id', id)
+    .eq('restaurant_id', rid);
   if (error) throw error;
 }
 
 export async function listOpenOrders(): Promise<OrderWithItems[]> {
   if (!isSupabase) {
     const db = loadLocal();
+    const id = getActiveRestaurantId();
+    if (!id) return [];
     return db.orders
-      .filter((o) => o.status === 'open')
+      .filter((o) => o.status === 'open' && o.restaurant_id === id)
       .sort((a, b) => a.table_number - b.table_number)
       .map((order) => ({
         order,
         items: db.items.filter((i) => i.order_id === order.id),
       }));
   }
+  const rid = requireRestaurantId();
   const { data: orders, error } = await sb()
     .from('orders')
     .select('*')
     .eq('status', 'open')
+    .eq('restaurant_id', rid)
     .order('table_number', { ascending: true });
   if (error) throw error;
   const ids = (orders ?? []).map((o) => o.id);
@@ -618,6 +1071,7 @@ export async function listOpenOrders(): Promise<OrderWithItems[]> {
       .from('order_items')
       .select('*')
       .in('order_id', ids)
+      .eq('restaurant_id', rid)
       .order('created_at', { ascending: true });
     if (itemsErr) throw itemsErr;
     items = (itemsData ?? []) as OrderItem[];
@@ -633,17 +1087,22 @@ export async function getOrderWithItems(
 ): Promise<OrderWithItems | null> {
   if (!isSupabase) {
     const db = loadLocal();
-    const order = db.orders.find((o) => o.id === orderId);
+    const rid = getActiveRestaurantId();
+    const order = db.orders.find(
+      (o) => o.id === orderId && (!rid || o.restaurant_id === rid),
+    );
     if (!order) return null;
     return {
       order,
       items: db.items.filter((i) => i.order_id === orderId),
     };
   }
+  const rid = requireRestaurantId();
   const { data: order, error } = await sb()
     .from('orders')
     .select('*')
     .eq('id', orderId)
+    .eq('restaurant_id', rid)
     .maybeSingle();
   if (error) throw error;
   if (!order) return null;
@@ -651,6 +1110,7 @@ export async function getOrderWithItems(
     .from('order_items')
     .select('*')
     .eq('order_id', orderId)
+    .eq('restaurant_id', rid)
     .order('created_at', { ascending: true });
   if (itemsErr) throw itemsErr;
   return { order: order as Order, items: (items ?? []) as OrderItem[] };
@@ -660,8 +1120,10 @@ export async function createOrder(
   tableNumber: number,
   waiter: Waiter,
 ): Promise<Order> {
+  const rid = requireRestaurantId();
   const order: Order = {
     id: newId(),
+    restaurant_id: rid,
     table_number: tableNumber,
     waiter_id: waiter.id,
     waiter_name: waiter.name,
@@ -679,6 +1141,7 @@ export async function createOrder(
     .from('orders')
     .insert({
       id: order.id,
+      restaurant_id: rid,
       table_number: tableNumber,
       waiter_id: waiter.id,
       waiter_name: waiter.name,
@@ -697,6 +1160,7 @@ export async function addItem(
   opts?: { serve?: string },
 ): Promise<OrderItem> {
   const serve = opts?.serve ?? null;
+  const rid = requireRestaurantId();
   if (!isSupabase) {
     const db = loadLocal();
     const existing = db.items.find(
@@ -714,6 +1178,7 @@ export async function addItem(
     const item: OrderItem = {
       id: newId(),
       order_id: orderId,
+      restaurant_id: rid,
       product_id: product.id,
       product_name: product.name,
       price_cents: product.price_cents,
@@ -731,6 +1196,7 @@ export async function addItem(
     .from('order_items')
     .select('*')
     .eq('order_id', orderId)
+    .eq('restaurant_id', rid)
     .eq('product_id', product.id)
     .eq('sent', false);
   const existing = (lines ?? []).find(
@@ -751,6 +1217,7 @@ export async function addItem(
     .insert({
       id: newId(),
       order_id: orderId,
+      restaurant_id: rid,
       product_id: product.id,
       product_name: product.name,
       price_cents: product.price_cents,
@@ -771,25 +1238,41 @@ export async function updateItem(
 ): Promise<void> {
   if (!isSupabase) {
     const db = loadLocal();
-    const item = db.items.find((i) => i.id === id);
+    const rid = getActiveRestaurantId();
+    const item = db.items.find(
+      (i) => i.id === id && (!rid || !i.restaurant_id || i.restaurant_id === rid),
+    );
     if (!item) return;
     if (patch.qty !== undefined) item.qty = patch.qty;
     if (patch.note !== undefined) item.note = patch.note;
     saveLocal(db);
     return;
   }
-  const { error } = await sb().from('order_items').update(patch).eq('id', id);
+  const rid = requireRestaurantId();
+  const { error } = await sb()
+    .from('order_items')
+    .update(patch)
+    .eq('id', id)
+    .eq('restaurant_id', rid);
   if (error) throw error;
 }
 
 export async function removeItem(id: string): Promise<void> {
   if (!isSupabase) {
     const db = loadLocal();
-    db.items = db.items.filter((i) => i.id !== id);
+    const rid = getActiveRestaurantId();
+    db.items = db.items.filter(
+      (i) => !(i.id === id && (!rid || !i.restaurant_id || i.restaurant_id === rid)),
+    );
     saveLocal(db);
     return;
   }
-  const { error } = await sb().from('order_items').delete().eq('id', id);
+  const rid = requireRestaurantId();
+  const { error } = await sb()
+    .from('order_items')
+    .delete()
+    .eq('id', id)
+    .eq('restaurant_id', rid);
   if (error) throw error;
 }
 
@@ -801,9 +1284,11 @@ export async function removeItem(id: string): Promise<void> {
 export async function cleanupEmptyOrders(): Promise<number> {
   if (!isSupabase) {
     const db = loadLocal();
+    const rid = getActiveRestaurantId();
     const emptyIds = new Set(
       db.orders
         .filter((o) => o.status === 'open')
+        .filter((o) => !rid || o.restaurant_id === rid)
         .filter((o) => !db.items.some((i) => i.order_id === o.id))
         .map((o) => o.id),
     );
@@ -836,10 +1321,12 @@ export async function sendOrder(orderId: string): Promise<void> {
     saveLocal(db);
     return;
   }
+  const rid = requireRestaurantId();
   const { error } = await sb()
     .from('order_items')
     .update({ sent: true })
     .eq('order_id', orderId)
+    .eq('restaurant_id', rid)
     .eq('sent', false);
   if (error) throw error;
 }
@@ -866,9 +1353,11 @@ export async function closeOrder(
     (await getSettings()).default_commission_pct ??
     DEFAULT_COMMISSION_PCT;
   const commission = Math.round((total * commissionPct) / 100);
+  const rid = requireRestaurantId();
   const bill: ClosedBill = {
     id: newId(),
     order_id: orderId,
+    restaurant_id: rid,
     table_number: ow.order.table_number,
     waiter_id: ow.order.waiter_id,
     waiter_name: ow.order.waiter_name,
@@ -893,6 +1382,7 @@ export async function closeOrder(
   const { error: billErr } = await sb().from('closed_bills').insert({
     id: bill.id,
     order_id: bill.order_id,
+    restaurant_id: rid,
     table_number: bill.table_number,
     waiter_id: bill.waiter_id,
     waiter_name: bill.waiter_name,
@@ -907,7 +1397,8 @@ export async function closeOrder(
   const { error: orderErr } = await sb()
     .from('orders')
     .update({ status: 'closed', closed_at: bill.closed_at })
-    .eq('id', orderId);
+    .eq('id', orderId)
+    .eq('restaurant_id', rid);
   if (orderErr) throw orderErr;
   return bill;
 }
@@ -915,7 +1406,10 @@ export async function closeOrder(
 /** Contas fechadas (p/ o financeiro do dono). */
 export async function listClosedBills(): Promise<ClosedBill[]> {
   if (!isSupabase) {
+    const id = getActiveRestaurantId();
+    if (!id) return [];
     return [...loadLocal().bills]
+      .filter((b) => b.restaurant_id === id)
       .map((b) => ({
         ...b,
         commission_cents: b.commission_cents ?? 0,
@@ -923,9 +1417,11 @@ export async function listClosedBills(): Promise<ClosedBill[]> {
       }))
       .sort((a, b) => b.closed_at.localeCompare(a.closed_at));
   }
+  const rid = requireRestaurantId();
   const { data, error } = await sb()
     .from('closed_bills')
     .select('*')
+    .eq('restaurant_id', rid)
     .order('closed_at', { ascending: false });
   if (error) throw error;
   return ((data ?? []) as ClosedBill[]).map((b) => ({
