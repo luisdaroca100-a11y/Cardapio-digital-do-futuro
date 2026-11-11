@@ -2,6 +2,7 @@
 
 import { Component, useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import QRCode from 'qrcode';
 import * as store from '@/lib/store';
 import type { RestaurantSummary } from '@/lib/store';
 import {
@@ -18,6 +19,7 @@ import type {
   DrinkType,
   OrderItem,
   OrderWithItems,
+  Owner,
   Product,
   Restaurant,
   Settings,
@@ -25,6 +27,7 @@ import type {
 } from '@/lib/types';
 
 type View =
+  | 'home'
   | 'setup'
   | 'login'
   | 'register'
@@ -40,6 +43,7 @@ type View =
   | 'owner-waiters'
   | 'owner-menu'
   | 'owner-settings'
+  | 'owner-qr'
   | 'admin';
 
 function brl(cents: number): string {
@@ -158,7 +162,20 @@ const SERVE_OPTIONS = [
 const ALL_PRODUCTS = '__todos__';
 
 function GarcomApp() {
-  const [view, setView] = useState<View>('login');
+  /** true quando o endereço tem ?tela=garcom (QR Code dos garçons):
+   * abre só a tela de login do garçom — sem apresentação e sem os
+   * links de dono, cadastro e administrador. */
+  const [waiterOnly, setWaiterOnly] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('tela') === 'garcom',
+  );
+  const [view, setView] = useState<View>(() =>
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('tela') === 'garcom'
+      ? 'login'
+      : 'home',
+  );
   const [booting, setBooting] = useState(true);
   const [settings, setSettings] = useState<Settings>({
     service_fee_pct: 3,
@@ -248,52 +265,61 @@ function GarcomApp() {
   useEffect(() => {
     (async () => {
       try {
+        // QR Code dos garçons (?tela=garcom): pula a apresentação e
+        // abre só a tela de login do garçom — sessão de dono ou de
+        // administrador não é restaurada nesse endereço.
+        const onlyWaiter =
+          new URLSearchParams(window.location.search).get('tela') ===
+          'garcom';
+        setWaiterOnly(onlyWaiter);
         setHasAdmin((await store.getPlatformAdmin()) !== null);
-        // Sessão do administrador da plataforma tem prioridade: ele não
-        // é garçom nem dono de nenhum restaurante.
-        const rawAdmin = safeGet(PLATFORM_ADMIN_SESSION_KEY);
-        if (rawAdmin) {
-          try {
-            const s = JSON.parse(rawAdmin) as Session;
-            const admin = await store.findPlatformAdminByLogin(s.login);
-            if (admin && admin.id === s.id) {
-              setAdminSession({
-                id: admin.id,
-                name: admin.login,
-                login: admin.login,
-              });
-              setView('admin');
-              return;
+        if (!onlyWaiter) {
+          // Sessão do administrador da plataforma tem prioridade: ele não
+          // é garçom nem dono de nenhum restaurante.
+          const rawAdmin = safeGet(PLATFORM_ADMIN_SESSION_KEY);
+          if (rawAdmin) {
+            try {
+              const s = JSON.parse(rawAdmin) as Session;
+              const admin = await store.findPlatformAdminByLogin(s.login);
+              if (admin && admin.id === s.id) {
+                setAdminSession({
+                  id: admin.id,
+                  name: admin.login,
+                  login: admin.login,
+                });
+                setView('admin');
+                return;
+              }
+            } catch {
+              /* sessão inválida: vai pro login */
             }
-          } catch {
-            /* sessão inválida: vai pro login */
           }
-        }
-        // Sessão do dono (área financeira) tem prioridade sobre a do garçom.
-        const rawOwner = safeGet(OWNER_SESSION_KEY);
-        if (rawOwner) {
-          try {
-            const s = JSON.parse(rawOwner) as Session;
-            const owner = await store.findOwnerByLogin(s.login);
-            const rid = owner?.restaurant_id ?? s.restaurant_id;
-            if (owner && owner.id === s.id && rid) {
-              store.setActiveRestaurant(rid);
-              setRestaurant(await store.getRestaurant(rid));
-              setOwnerSession({
-                id: owner.id,
-                name: owner.name,
-                login: owner.login,
-                restaurant_id: rid,
-              });
-              await refreshOwner();
-              // Restaurante novo, sem garçom ainda: primeiro acesso
-              // (criar o primeiro garçom + cardápio).
-              const ws = await store.listWaiters();
-              setView(ws.length === 0 ? 'setup' : 'owner');
-              return;
+          // Sessão do dono (área financeira) tem prioridade sobre a do garçom.
+          const rawOwner = safeGet(OWNER_SESSION_KEY);
+          if (rawOwner) {
+            try {
+              const s = JSON.parse(rawOwner) as Session;
+              const owner = await store.findOwnerByLogin(s.login);
+              const rid = owner?.restaurant_id ?? s.restaurant_id;
+              if (owner && owner.id === s.id && rid) {
+                store.setActiveRestaurant(rid);
+                setRestaurant(await store.getRestaurant(rid));
+                setOwnerSession({
+                  id: owner.id,
+                  name: owner.name,
+                  login: owner.login,
+                  restaurant_id: rid,
+                });
+                await refreshOwner();
+                // Restaurante novo, sem garçom ainda: primeiro acesso
+                // (criar o primeiro garçom + cardápio).
+                const ws = await store.listWaiters();
+                setView(ws.length === 0 ? 'setup' : 'owner');
+                return;
+              }
+            } catch {
+              /* sessão inválida: vai pro login */
             }
-          } catch {
-            /* sessão inválida: vai pro login */
           }
         }
         const raw = safeGet(SESSION_KEY);
@@ -323,7 +349,9 @@ function GarcomApp() {
             /* sessão inválida: vai pro login */
           }
         }
-        setView('login');
+        // Sem sessão: o QR vai direto pro login do garçom; todo o
+        // resto começa na apresentação.
+        setView(onlyWaiter ? 'login' : 'home');
       } catch (e) {
         setError(
           e instanceof Error ? e.message : 'Não foi possível carregar o sistema.',
@@ -335,33 +363,39 @@ function GarcomApp() {
     })();
   }, [refresh, refreshOwner]);
 
+  /** Login único do formulário principal: o login é único na
+   * plataforma toda — se for de garçom, abre as mesas; se for de
+   * dono, abre a área do dono. Na tela do QR (?tela=garcom), só o
+   * garçom entra (o login de dono não vale ali). */
   async function handleLogin(login: string, password: string) {
     setError('');
     setBusy(true);
     try {
-      const waiter = await store.findWaiterByLogin(login.trim());
-      if (!waiter) throw new Error('Login ou senha incorretos.');
-      const hash = await store.hashPassword(password);
-      if (hash !== waiter.password_hash) {
-        throw new Error('Login ou senha incorretos.');
+      const result = await store.authenticate(login.trim(), password);
+      if (!result) throw new Error('Login ou senha incorretos.');
+      if (result.kind === 'waiter') {
+        const waiter = result.user;
+        if (!waiter.restaurant_id) {
+          throw new Error(
+            'Restaurante não identificado — peça ao dono para rodar a migração do supabase.sql.',
+          );
+        }
+        store.setActiveRestaurant(waiter.restaurant_id);
+        setRestaurant(await store.getRestaurant(waiter.restaurant_id));
+        const s: Session = {
+          id: waiter.id,
+          name: waiter.name,
+          login: waiter.login,
+          restaurant_id: waiter.restaurant_id,
+        };
+        setSession(s);
+        safeSet(SESSION_KEY, JSON.stringify(s));
+        await refresh();
+        setView('tables');
+        return;
       }
-      if (!waiter.restaurant_id) {
-        throw new Error(
-          'Restaurante não identificado — peça ao dono para rodar a migração do supabase.sql.',
-        );
-      }
-      store.setActiveRestaurant(waiter.restaurant_id);
-      setRestaurant(await store.getRestaurant(waiter.restaurant_id));
-      const s: Session = {
-        id: waiter.id,
-        name: waiter.name,
-        login: waiter.login,
-        restaurant_id: waiter.restaurant_id,
-      };
-      setSession(s);
-      safeSet(SESSION_KEY, JSON.stringify(s));
-      await refresh();
-      setView('tables');
+      if (waiterOnly) throw new Error('Login ou senha incorretos.');
+      await enterOwnerArea(result.user);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível entrar.');
     } finally {
@@ -377,10 +411,36 @@ function GarcomApp() {
     store.setActiveRestaurant(null);
     setRestaurant(null);
     safeRemove(SESSION_KEY);
-    setView('login');
+    // Na tela do QR, sair volta pro login do garçom; no resto, pra apresentação.
+    setView(waiterOnly ? 'login' : 'home');
   }
 
   /* ------------------------------ DONO: ACESSO ------------------------------ */
+
+  /** Entra na área do dono (área financeira) — usado pelo login
+   * principal (quando o login é de dono) e pelo "Sou o dono". */
+  async function enterOwnerArea(owner: Owner) {
+    if (!owner.restaurant_id) {
+      throw new Error(
+        'Restaurante não identificado — rode a migração do supabase.sql.',
+      );
+    }
+    store.setActiveRestaurant(owner.restaurant_id);
+    setRestaurant(await store.getRestaurant(owner.restaurant_id));
+    const s: Session = {
+      id: owner.id,
+      name: owner.name,
+      login: owner.login,
+      restaurant_id: owner.restaurant_id,
+    };
+    setOwnerSession(s);
+    safeSet(OWNER_SESSION_KEY, JSON.stringify(s));
+    setOwnerAuth(false);
+    await refreshOwner();
+    // Restaurante novo, sem garçom ainda: primeiro acesso.
+    const ws = await store.listWaiters();
+    setView(ws.length === 0 ? 'setup' : 'owner');
+  }
 
   async function handleOwnerLogin(login: string, password: string) {
     setError('');
@@ -392,26 +452,7 @@ function GarcomApp() {
       if (hash !== owner.password_hash) {
         throw new Error('Login ou senha incorretos.');
       }
-      if (!owner.restaurant_id) {
-        throw new Error(
-          'Restaurante não identificado — rode a migração do supabase.sql.',
-        );
-      }
-      store.setActiveRestaurant(owner.restaurant_id);
-      setRestaurant(await store.getRestaurant(owner.restaurant_id));
-      const s: Session = {
-        id: owner.id,
-        name: owner.name,
-        login: owner.login,
-        restaurant_id: owner.restaurant_id,
-      };
-      setOwnerSession(s);
-      safeSet(OWNER_SESSION_KEY, JSON.stringify(s));
-      setOwnerAuth(false);
-      await refreshOwner();
-      // Restaurante novo, sem garçom ainda: primeiro acesso.
-      const ws = await store.listWaiters();
-      setView(ws.length === 0 ? 'setup' : 'owner');
+      await enterOwnerArea(owner);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível entrar.');
     } finally {
@@ -425,7 +466,7 @@ function GarcomApp() {
     store.setActiveRestaurant(null);
     setRestaurant(null);
     safeRemove(OWNER_SESSION_KEY);
-    setView('login');
+    setView(waiterOnly ? 'login' : 'home');
   }
 
   /* ------------------------------ CADASTRO DO RESTAURANTE ------------------------------ */
@@ -513,7 +554,7 @@ function GarcomApp() {
     setAdminSession(null);
     setAdminAuth(null);
     safeRemove(PLATFORM_ADMIN_SESSION_KEY);
-    setView('login');
+    setView(waiterOnly ? 'login' : 'home');
   }
 
   /** Abre a Revisão: lista das mesas fechadas (menu hambúrguer). */
@@ -897,6 +938,17 @@ function GarcomApp() {
     );
   }
 
+  /* ------------------------------ APRESENTAÇÃO (PRIMEIRA TELA) ------------------------------ */
+
+  if (view === 'home') {
+    return (
+      <HomeView
+        onLogin={() => setView('login')}
+        onRegister={() => setView('register')}
+      />
+    );
+  }
+
   /* ------------------------------ SETUP ------------------------------ */
 
   if (view === 'setup') {
@@ -929,7 +981,7 @@ function GarcomApp() {
           <RegisterRestaurantView
             busy={busy}
             onRegister={handleRestaurantRegister}
-            onCancel={() => setView('login')}
+            onCancel={() => setView('home')}
           />
           <div className="mode-badge">
             {isSupabase
@@ -969,26 +1021,33 @@ function GarcomApp() {
           ) : (
             <>
               <LoginForm busy={busy} onLogin={handleLogin} />
-              <button
-                className="owner-link"
-                onClick={() => setOwnerAuth(true)}
-              >
-                Sou o dono
-              </button>
-              <button
-                className="owner-link"
-                onClick={() => setView('register')}
-              >
-                Cadastrar meu restaurante
-              </button>
-              <button
-                className="owner-link admin-link"
-                onClick={() =>
-                  setAdminAuth(hasAdmin ? 'login' : 'setup')
-                }
-              >
-                Área do administrador
-              </button>
+              {/* Na tela do QR (?tela=garcom) só aparece o login do
+                  garçom — sem "Sou o dono", sem cadastro e sem a área
+                  do administrador. */}
+              {!waiterOnly && (
+                <>
+                  <button
+                    className="owner-link"
+                    onClick={() => setOwnerAuth(true)}
+                  >
+                    Sou o dono
+                  </button>
+                  <button
+                    className="owner-link"
+                    onClick={() => setView('register')}
+                  >
+                    Cadastrar meu restaurante
+                  </button>
+                  <button
+                    className="owner-link admin-link"
+                    onClick={() =>
+                      setAdminAuth(hasAdmin ? 'login' : 'setup')
+                    }
+                  >
+                    Área do administrador
+                  </button>
+                </>
+              )}
             </>
           )}
           <div className="mode-badge">
@@ -1059,6 +1118,18 @@ function GarcomApp() {
         settings={settings}
         restaurantName={restaurant?.name ?? ''}
         onSaved={refreshOwner}
+        onNavigate={setView}
+        onLogout={handleOwnerLogout}
+      />
+    );
+  }
+
+  /* ------------------------------ DONO: QR CODE DOS GARÇONS ------------------------------ */
+
+  if (view === 'owner-qr' && ownerSession) {
+    return (
+      <OwnerQrView
+        restaurantName={restaurant?.name ?? ''}
         onNavigate={setView}
         onLogout={handleOwnerLogout}
       />
@@ -2972,7 +3043,7 @@ function PlatformAdminView({ onLogout }: { onLogout: () => void }) {
   );
 }
 
-type OwnerTab = 'dashboard' | 'waiters' | 'menu' | 'settings';
+type OwnerTab = 'dashboard' | 'waiters' | 'menu' | 'settings' | 'qr';
 
 /** Cabeçalho da área do dono + abas (Dashboard, Garçons, Cardápio, Ajustes). */
 function OwnerHeader({
@@ -3031,8 +3102,142 @@ function OwnerHeader({
         >
           Ajustes
         </button>
+        <button
+          className={tab === 'qr' ? 'on' : ''}
+          onClick={() => onNavigate('owner-qr')}
+        >
+          QR Code
+        </button>
       </div>
     </>
+  );
+}
+
+/* ------------------- APRESENTAÇÃO (PRIMEIRA TELA) ------------------- */
+
+/** Primeira tela do sistema: explica como funciona, mostra os planos
+ * e o cadastro. Só tem o botão "Cadastrar meu restaurante" — quem já
+ * tem conta entra pelo link pequeno e discreto no rodapé ("Já tem uma
+ * conta? Entrar"). O QR Code dos garçons (?tela=garcom) não passa
+ * por aqui: vai direto pro login do garçom. */
+function HomeView({
+  onLogin,
+  onRegister,
+}: {
+  onLogin: () => void;
+  onRegister: () => void;
+}) {
+  return (
+    <div className="app">
+      <div className="hero">
+        <h1>Sistema do Garçom</h1>
+        <p>Pedidos, mesas e financeiro num só lugar.</p>
+      </div>
+      <div className="content">
+        <button
+          className="btn btn-orange home-cta"
+          onClick={onRegister}
+        >
+          Cadastrar meu restaurante
+        </button>
+
+        <div className="section-title">Como funciona</div>
+        <div className="steps">
+          <div className="step">
+            <strong>1 · O garçom anota o pedido no celular</strong>
+            <span>
+              Mesas numeradas, busca do produto, só quem abriu a mesa mexe
+              nela.
+            </span>
+          </div>
+          <div className="step">
+            <strong>2 · O pedido vai direto pra cozinha e pro bar</strong>
+            <span>
+              Prato imprime na cozinha sem valor; bebida imprime no bar com
+              o jeito de servir.
+            </span>
+          </div>
+          <div className="step">
+            <strong>3 · Ao fechar a mesa, a conta vai pro balcão</strong>
+            <span>
+              A venda cai sozinha no financeiro, com a comissão do garçom
+              já calculada.
+            </span>
+          </div>
+          <div className="step">
+            <strong>4 · O dono acompanha tudo</strong>
+            <span>
+              Vendas por garçom, comissão de cada um e botão de finalizar o
+              dia (o dia reabre sozinho às 9h).
+            </span>
+          </div>
+        </div>
+
+        <div className="section-title">Planos</div>
+        <p className="hint">
+          Cadastre seu restaurante e use <strong>3 dias grátis</strong>.
+          Depois, escolha o plano:
+        </p>
+        <div className="plan-grid">
+          <div className="plan-card">
+            <strong>Mensal</strong>
+            <span className="plan-price">R$ 69,99/mês</span>
+            <span>Suporte 24 horas</span>
+          </div>
+          <div className="plan-card featured">
+            <strong>Anual</strong>
+            <span className="plan-price">R$ 499,99/ano</span>
+            <span>Suporte 24 horas</span>
+          </div>
+        </div>
+
+        <div className="section-title">Dúvidas frequentes</div>
+        <div className="card">
+          <h3>Quem cadastra o cardápio e os garçons?</h3>
+          <p className="hint">
+            Só o dono, na área dele. O garçom só recebe o login e a senha
+            pra entrar nas mesas.
+          </p>
+          <h3>Outro restaurante consegue ver minhas vendas?</h3>
+          <p className="hint">
+            Não. Cada restaurante vê só os dados dele — garçons, cardápio,
+            mesas e financeiro separados.
+          </p>
+          <h3>E se o cliente pedir mais depois de fechar a conta?</h3>
+          <p className="hint">
+            O garçom reabre a mesma mesa e continua o pedido normal.
+          </p>
+          <h3>Quanto custa?</h3>
+          <p className="hint">
+            3 dias grátis. Depois, R$ 69,99 por mês ou R$ 499,99 por ano —
+            os dois com suporte 24 horas.
+          </p>
+        </div>
+
+        <button
+          className="btn btn-orange home-cta"
+          onClick={onRegister}
+        >
+          Cadastrar meu restaurante
+        </button>
+
+        <div className="home-footer">
+          <button className="owner-link" onClick={onLogin}>
+            Já tem uma conta? Entrar
+          </button>
+        </div>
+      </div>
+
+      <a
+        className="wa-float"
+        href="https://wa.me/5519971995144?text=Ol%C3%A1!%20Quero%20saber%20mais%20sobre%20o%20sistema%20do%20restaurante."
+        target="_blank"
+        rel="noreferrer"
+        aria-label="Falar no WhatsApp"
+      >
+        💬
+      </a>
+    </div>
   );
 }
 
@@ -3693,6 +3898,84 @@ function OwnerSettingsView({
           <button className="btn btn-purple" disabled={busy} onClick={save}>
             Salvar ajustes
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------- DONO: QR CODE DOS GARÇONS ------------------- */
+
+/** Seção "QR Code dos garçons" na área do dono: o QR é gerado no
+ * próprio app (biblioteca `qrcode`, sem serviço externo) e codifica o
+ * endereço do sistema com ?tela=garcom. O garçom escaneia com o
+ * celular e cai direto na tela de login dele — só login e senha. */
+function OwnerQrView({
+  restaurantName,
+  onNavigate,
+  onLogout,
+}: {
+  restaurantName: string;
+  onNavigate: (v: View) => void;
+  onLogout: () => void;
+}) {
+  const [qrDataUrl, setQrDataUrl] = useState('');
+  const [qrError, setQrError] = useState('');
+  // O endereço é o do sistema onde ele está rodando (em produção, o
+  // da Vercel) — o QR sempre aponta pro endereço certo.
+  const url =
+    typeof window !== 'undefined'
+      ? store.waiterLoginUrl(window.location.origin)
+      : '';
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const dataUrl = await QRCode.toDataURL(url, {
+          width: 280,
+          margin: 1,
+        });
+        if (alive) setQrDataUrl(dataUrl);
+      } catch {
+        if (alive) setQrError('Não foi possível gerar o QR Code.');
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [url]);
+
+  return (
+    <div className="app">
+      <OwnerHeader
+        title="QR Code dos garçons"
+        sub="Acesso do garçom"
+        tab="qr"
+        restaurantName={restaurantName}
+        onNavigate={onNavigate}
+        onLogout={onLogout}
+      />
+      <div className="content">
+        <div className="card">
+          <h2>QR Code dos garçons</h2>
+          <p className="hint">
+            Imprima e deixe no restaurante: o garçom escaneia com o celular
+            e cai direto na tela de login dele — só login e senha, sem os
+            links de dono, cadastro e administrador. O QR só abre a tela;
+            a senha continua protegendo o acesso.
+          </p>
+          {qrError && <div className="error">{qrError}</div>}
+          {qrDataUrl ? (
+            <img
+              className="qr-img"
+              src={qrDataUrl}
+              alt="QR Code de acesso do garçom"
+            />
+          ) : (
+            !qrError && <div className="loading">Gerando o QR Code…</div>
+          )}
+          <p className="hint">Endereço do QR: {url}</p>
         </div>
       </div>
     </div>

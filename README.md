@@ -12,6 +12,25 @@ papel e o garçom anota no celular.
 > cadastro, sem pagamento dentro do sistema — a cobrança mensal fica
 > para depois.
 
+> **Apresentação (primeira tela).** Quem abre o sistema cai primeiro
+> na apresentação: como funciona, planos (3 dias grátis, depois R$ 69,99
+> por mês ou R$ 499,99 por ano, suporte 24 horas nos dois) e o botão
+> "Cadastrar meu restaurante", que abre o cadastro dentro do próprio
+> sistema. Sem botão grande de entrar — quem já tem conta entra pelo
+> link discreto no rodapé ("Já tem uma conta? Entrar").
+
+> **Login único.** O formulário principal de login aceita o login do
+> garçom e o do dono (o login é único na plataforma toda): garçom abre
+> as mesas; dono abre a área dele. O link "Sou o dono" continua
+> existindo como alternativa.
+
+> **QR Code dos garçons.** Na área do dono, a aba "QR Code" mostra um
+> QR gerado no próprio app (biblioteca `qrcode`, sem serviço externo)
+> com o endereço do sistema + `?tela=garcom`. O garçom escaneia e cai
+> direto na tela de login dele — só login e senha, sem apresentação e
+> sem os links de dono, cadastro e administrador. O QR só abre a tela;
+> a senha continua protegendo o acesso.
+
 > **Área do administrador (só o Luis).** Na tela de login, o link
 > discreto "Área do administrador" abre o acesso do administrador da
 > plataforma (login que só ele sabe + senha; criado no primeiro
@@ -23,30 +42,38 @@ papel e o garçom anota no celular.
 
 ## Como funciona
 
-1. **Cadastrar meu restaurante** (na tela de login): o dono informa o
+1. **Apresentação** (primeira tela): explica como o sistema funciona,
+   mostra os planos e o botão **Cadastrar meu restaurante**, que abre o
+   cadastro dentro do próprio sistema. Quem já tem conta entra pelo
+   link discreto no rodapé ("Já tem uma conta? Entrar"). O QR Code dos
+   garçons (`?tela=garcom`) não passa por aqui: vai direto pro login
+   do garçom.
+2. **Cadastrar meu restaurante**: o dono informa o
    nome do restaurante, o nome dele, o login e a senha. Cria o
    restaurante + o acesso do dono e já entra logado na área do dono.
-2. **Primeiro acesso** (só aparece uma vez, quando o restaurante ainda
+3. **Primeiro acesso** (só aparece uma vez, quando o restaurante ainda
    não tem garçom): cria o acesso do primeiro garçom (nome, login e
    senha) e cadastra o cardápio (nome, preço, categoria e se imprime na
    Cozinha ou no Bar). Depois, o sistema abre direto no login.
-3. **Login do garçom** — entra e já cai na grade de mesas.
-4. **Mesas** — só o "Olá, nome" e a grade numerada com o estado ao vivo:
+4. **Login** — o mesmo formulário aceita o login do garçom e o do dono:
+   garçom entra e já cai na grade de mesas; dono entra na área dele.
+   (O link "Sou o dono" continua existindo como alternativa.)
+5. **Mesas** — só o "Olá, nome" e a grade numerada com o estado ao vivo:
    livre, aberta por você (com o total correndo) ou aberta por outro garçom
    (cadeado no canto e o nome dele pequeno no ícone; só ele abre, sem senha
    de novo). No cabeçalho ficam os botões **Cardápio** (ver o cardápio),
    **Ajustes** e **Sair**.
-4. **Pedir** — busca em cima, categorias em botões laranja, produtos em
+6. **Pedir** — busca em cima, categorias em botões laranja, produtos em
    cartões roxos com o preço na etiqueta verde. Tocou no produto, ele entra
    no pedido e abre o resumo.
-5. **Resumo do pedido** — muda quantidade, escreve observação, retira item;
+7. **Resumo do pedido** — muda quantidade, escreve observação, retira item;
    mostra subtotal, taxa de serviço e total. Embaixo: **Adicionar produtos**,
    **Fechar mesa** e **Enviar pedido**.
-6. **Enviar pedido** — a via da **cozinha** sai só com os pratos e a mesa
+8. **Enviar pedido** — a via da **cozinha** sai só com os pratos e a mesa
    (sem valores) e a do **bar** só com as bebidas. Os dois ficam juntos no
    resumo da mesa. Depois de enviar, a mesa continua sendo do mesmo garçom:
    ele toca nela de novo e pede mais na mesma mesa.
-7. **Fechar mesa** — a via do **balcão** sai com tudo e os valores finais, e
+9. **Fechar mesa** — a via do **balcão** sai com tudo e os valores finais, e
    a mesa libera. Logo depois do fechamento aparece a **revisão da conta**
    (itens, quantidades e valores) para o garçom conferir se não esqueceu
    nada ou adicionou algo sem querer. A conta fechada fica guardada para o

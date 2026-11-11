@@ -928,6 +928,40 @@ export async function findWaiterByLogin(login: string): Promise<Waiter | null> {
   return (data as Waiter | null) ?? null;
 }
 
+/** Login do formulário principal: procura o login entre garçons e
+ * donos (o login é único na plataforma toda) e confere a senha.
+ * Devolve quem é e o papel dele; null = login inexistente ou senha
+ * errada. Garçom entra nas mesas; dono entra na área dele. */
+export type Principal =
+  | { kind: 'waiter'; user: Waiter }
+  | { kind: 'owner'; user: Owner };
+
+export async function authenticate(
+  login: string,
+  password: string,
+): Promise<Principal | null> {
+  const clean = login.trim();
+  const waiter = await findWaiterByLogin(clean);
+  if (waiter) {
+    const hash = await hashPassword(password);
+    return hash === waiter.password_hash
+      ? { kind: 'waiter', user: waiter }
+      : null;
+  }
+  const owner = await findOwnerByLogin(clean);
+  if (!owner) return null;
+  const hash = await hashPassword(password);
+  return hash === owner.password_hash ? { kind: 'owner', user: owner } : null;
+}
+
+/** Endereço que o QR Code dos garçons codifica: abre o sistema direto
+ * na tela de login do garçom (só login e senha), pelo parâmetro
+ * ?tela=garcom — sem passar pela apresentação nem pelos links de
+ * dono, cadastro e administrador. */
+export function waiterLoginUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, '')}/?tela=garcom`;
+}
+
 export async function listProducts(): Promise<Product[]> {
   if (!isSupabase) {
     const id = getActiveRestaurantId();

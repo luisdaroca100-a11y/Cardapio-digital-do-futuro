@@ -948,6 +948,144 @@ section('13 · Fonte: admin e multi-restaurante');
 /* ------------------------------------------------------------------ */
 /* 14 · Build + HTTP                                                   */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* 15 · Login unificado + QR Code dos garçons                         */
+/* ------------------------------------------------------------------ */
+section('15 · Login unificado + QR Code');
+{
+  // Login único do formulário principal (garçom 'carlos', senha '1234';
+  // dono 'dono-luis', senha 'senha-dono-123' — criados nas seções 1 e 3).
+  const asWaiter = await store.authenticate('carlos', '1234');
+  check(
+    "login de garçom no formulário principal acha o garçom",
+    asWaiter !== null && asWaiter.kind === 'waiter' && asWaiter.user.login === 'carlos',
+  );
+  check(
+    'login de garçom com senha errada não entra',
+    (await store.authenticate('carlos', 'errada')) === null,
+  );
+  const asOwner = await store.authenticate('dono-luis', 'senha-dono-123');
+  check(
+    'login de dono no formulário principal acha o dono',
+    asOwner !== null && asOwner.kind === 'owner' && asOwner.user.login === 'dono-luis',
+  );
+  check(
+    'login de dono com senha errada não entra',
+    (await store.authenticate('dono-luis', 'errada')) === null,
+  );
+  check(
+    'login inexistente não entra',
+    (await store.authenticate('ninguem', '1234')) === null,
+  );
+  // Endereço do QR Code dos garçons (?tela=garcom).
+  check(
+    'URL do QR abre a tela do garçom',
+    store.waiterLoginUrl('https://cardapio-digital-do-futuro.vercel.app') ===
+      'https://cardapio-digital-do-futuro.vercel.app/?tela=garcom',
+  );
+  check(
+    'URL do QR ignora barra no fim da base',
+    store.waiterLoginUrl('https://cardapio-digital-do-futuro.vercel.app/') ===
+      'https://cardapio-digital-do-futuro.vercel.app/?tela=garcom',
+  );
+  // Fonte da página: login principal usa o authenticate e entra na
+  // área do dono quando o login é de dono.
+  check(
+    'handleLogin usa store.authenticate',
+    pageSrc.includes('store.authenticate('),
+  );
+  check(
+    'login de dono no formulário principal entra na área do dono',
+    pageSrc.includes('enterOwnerArea(result.user)'),
+  );
+  // Fonte da página: o parâmetro ?tela=garcom esconde os links de
+  // dono, cadastro e administrador (só login e senha do garçom).
+  check(
+    'parâmetro do garçom lido (?tela=garcom)',
+    pageSrc.includes("'tela') === 'garcom'"),
+  );
+  check(
+    'links de dono/cadastro/admin escondidos na tela do garçom',
+    pageSrc.includes('!waiterOnly'),
+  );
+  check(
+    'boot do QR pula a apresentação e vai pro login',
+    pageSrc.includes("onlyWaiter ? 'login' : 'home'"),
+  );
+  // Fonte da página: seção "QR Code dos garçons" na área do dono.
+  check(
+    'rota do QR na área do dono (owner-qr)',
+    pageSrc.includes("'owner-qr'"),
+  );
+  check(
+    'seção "QR Code dos garçons" existe',
+    pageSrc.includes('QR Code dos garçons'),
+  );
+  check(
+    'QR gerado no próprio app (toDataURL)',
+    pageSrc.includes('toDataURL'),
+  );
+  check(
+    'QR usa o endereço do sistema (waiterLoginUrl)',
+    pageSrc.includes('store.waiterLoginUrl('),
+  );
+  check('CSS do QR (.qr-img)', cssSrc.includes('.qr-img'));
+}
+
+/* ------------------------------------------------------------------ */
+/* 16 · Apresentação como primeira tela (junção com o site)           */
+/* ------------------------------------------------------------------ */
+section('16 · Apresentação (primeira tela)');
+{
+  const homeSrc = pageSrc.slice(
+    pageSrc.indexOf('function HomeView'),
+    pageSrc.indexOf('/* ------------------- DONO: DASHBOARD'),
+  );
+  check('componente da apresentação existe (HomeView)', homeSrc.length > 0);
+  check(
+    'apresentação é a primeira tela sem sessão',
+    pageSrc.includes("onlyWaiter ? 'login' : 'home'"),
+  );
+  check(
+    'apresentação explica como funciona',
+    homeSrc.includes('Como funciona'),
+  );
+  check('plano mensal R$ 69,99', homeSrc.includes('R$ 69,99'));
+  check('plano anual R$ 499,99', homeSrc.includes('R$ 499,99'));
+  check('3 dias grátis no plano', homeSrc.includes('3 dias grátis'));
+  check(
+    'suporte 24 horas nos dois planos',
+    homeSrc.includes('Suporte 24 horas'),
+  );
+  check(
+    'botão flutuante de WhatsApp (5519971995144)',
+    homeSrc.includes('wa.me/5519971995144'),
+  );
+  check(
+    'botão "Cadastrar meu restaurante" abre o cadastro in-app',
+    homeSrc.includes('Cadastrar meu restaurante') &&
+      homeSrc.includes('onClick={onRegister}'),
+  );
+  check(
+    'sem botão grande "Entrar" na apresentação — só o link discreto no rodapé',
+    !homeSrc.includes('>Entrar<') &&
+      homeSrc.includes('Já tem uma conta? Entrar'),
+  );
+  check(
+    'link discreto do rodapé leva ao login',
+    homeSrc.includes('onClick={onLogin}'),
+  );
+  check(
+    'cadastro abre dentro do sistema (sem abrir outro site)',
+    pageSrc.includes("onRegister={() => setView('register')}"),
+  );
+  check('CSS dos planos (.plan-card)', cssSrc.includes('.plan-card'));
+  check(
+    'CSS do botão flutuante (.wa-float)',
+    cssSrc.includes('.wa-float'),
+  );
+}
+
 section('14 · Build + HTTP');
 {
   const run = (cmd, args) =>
@@ -976,6 +1114,15 @@ section('14 · Build + HTTP');
     }
   }
   check('servidor responde HTTP 200', status === 200);
+  // O endereço do QR Code dos garçons (?tela=garcom) também serve.
+  let qrStatus = 0;
+  try {
+    const resQr = await fetch('http://localhost:3100/?tela=garcom');
+    qrStatus = resQr.status;
+  } catch {
+    qrStatus = 0;
+  }
+  check('endereço do QR (?tela=garcom) responde HTTP 200', qrStatus === 200);
   server.kill('SIGTERM');
 }
 
