@@ -3182,6 +3182,22 @@ function HomeView({
   // planos fica sempre legível ao rolar.
   const plansRef = useRef<HTMLDivElement | null>(null);
   const [hideWa, setHideWa] = useState(false);
+  // Calculadora de comissão — exemplo do Luis: R$ 200,00 a 8% =
+  // R$ 16,00 do garçom, R$ 184,00 pro restaurante.
+  const [calcVenda, setCalcVenda] = useState('200');
+  const [calcPct, setCalcPct] = useState('8');
+  const calcVendaCents = Math.max(
+    0,
+    Math.round((parseFloat(calcVenda.replace(',', '.')) || 0) * 100),
+  );
+  const calcPctNum = Math.max(
+    0,
+    Math.min(100, parseFloat(calcPct.replace(',', '.')) || 0),
+  );
+  const calcComissaoCents = Math.round(
+    (calcVendaCents * calcPctNum) / 100,
+  );
+  const calcRestauranteCents = calcVendaCents - calcComissaoCents;
   useEffect(() => {
     const update = () => {
       const el = plansRef.current;
@@ -3242,6 +3258,188 @@ function HomeView({
               Vendas por garçom, comissão de cada um e botão de finalizar o
               dia (o dia reabre sozinho às 9h).
             </span>
+          </div>
+        </div>
+
+        <div className="section-title">
+          As vias da cozinha, do bar e do balcão
+        </div>
+        <p className="hint">
+          O pedido sai impresso na hora, cada um no seu lugar. Na cozinha
+          e no bar, a via sai sem valores — só o pedido e a mesa.
+        </p>
+        <div className="home-tickets">
+          <div className="ticket">
+            <div className="t-head">
+              <span className="t-logo" aria-hidden>
+                👨‍🍳
+              </span>
+              <span className="t-name">Gosto Caseiro</span>
+              <span className="t-num">
+                Pedido Nº<strong>0001</strong>
+              </span>
+            </div>
+            <div className="t-meta">
+              Mesa: 3 | Hora: 19:32 | Garçom: Carlos
+            </div>
+            <div className="t-band">👨‍🍳&nbsp; COZINHA</div>
+            <div className="t-cols">
+              <span className="t-qty">Qtd.</span>
+              <span>Produto</span>
+            </div>
+            <hr />
+            <div className="t-row">
+              <span className="t-qty">1×</span>
+              <span>Filé de Frango</span>
+            </div>
+            <div className="t-detail">
+              arroz branco, salada verde, batata frita
+            </div>
+            <hr />
+            <div className="t-foot">
+              ✓ Pedido em preparo!
+              <span>Qualquer dúvida, chame o garçom.</span>
+            </div>
+          </div>
+
+          <div className="ticket">
+            <div className="t-head">
+              <span className="t-logo" aria-hidden>
+                🥤
+              </span>
+              <span className="t-name">Gosto Caseiro</span>
+              <span className="t-num">
+                Pedido Nº<strong>0001</strong>
+              </span>
+            </div>
+            <div className="t-meta">
+              Mesa: 3 | Hora: 19:32 | Garçom: Carlos
+            </div>
+            <div className="t-band">🥤&nbsp; BAR</div>
+            <div className="t-cols">
+              <span className="t-qty">Qtd.</span>
+              <span>Produto</span>
+            </div>
+            <hr />
+            <div className="t-row">
+              <span className="t-qty">1×</span>
+              <span>Coca 600ml</span>
+            </div>
+            <div className="t-detail">copo com limão e gelo</div>
+            <hr />
+            <div className="t-foot">
+              ✓ Pedido em preparo!
+              <span>Qualquer dúvida, chame o garçom.</span>
+            </div>
+          </div>
+
+          <div className="ticket">
+            <div className="t-head">
+              <span className="t-logo" aria-hidden>
+                🧾
+              </span>
+              <span className="t-name">Gosto Caseiro</span>
+              <span className="t-num">
+                Pedido Nº<strong>0001</strong>
+              </span>
+            </div>
+            <div className="t-meta">
+              Mesa: 3 | Hora: 19:32 | Garçom: Carlos
+            </div>
+            <div className="t-band">🧾&nbsp; CONTA</div>
+            <div className="t-cols">
+              <span className="t-qty">Qtd.</span>
+              <span className="t-item">Produto</span>
+              <span className="t-price">Valor</span>
+            </div>
+            <hr />
+            <div className="t-row">
+              <span className="t-qty">1×</span>
+              <span className="t-item">Filé de Frango</span>
+              <span className="t-price">R$ 28,90</span>
+            </div>
+            <div className="t-row">
+              <span className="t-qty">1×</span>
+              <span className="t-item">Coca 600ml</span>
+              <span className="t-price">R$ 8,99</span>
+            </div>
+            <hr />
+            <div className="t-line">
+              <span>Subtotal</span>
+              <span>R$ 37,89</span>
+            </div>
+            <div className="t-line">
+              <span>Taxa de serviço</span>
+              <span>R$ 1,14</span>
+            </div>
+            <div className="t-line t-total">
+              <span>Total</span>
+              <span>R$ 39,03</span>
+            </div>
+            <hr />
+            <div className="t-foot">Obrigado pela preferência!</div>
+          </div>
+        </div>
+
+        <div className="section-title">O financeiro do dono</div>
+        <div className="steps">
+          <div className="step">
+            <strong>Vendas por garçom</strong>
+            <span>
+              Cada conta fechada cai sozinha no financeiro, com o garçom e
+              a % dele.
+            </span>
+          </div>
+          <div className="step">
+            <strong>Comissão calculada sozinha</strong>
+            <span>
+              Exemplo: vendeu R$ 200,00 a 8% — R$ 16,00 é do garçom e
+              R$ 184,00 fica pro restaurante.
+            </span>
+          </div>
+          <div className="step">
+            <strong>Botão de finalizar o dia</strong>
+            <span>
+              Fecha o dia com o resumo pra pagar os garçons. No dia
+              seguinte, abre sozinho às 9h.
+            </span>
+          </div>
+        </div>
+
+        <div className="card calc-card">
+          <h3>Calculadora de comissão</h3>
+          <p className="hint">
+            Digite o valor da venda e a % do garçom:
+          </p>
+          <div className="calc-row">
+            <div className="field">
+              <label htmlFor="calc-venda">Valor da venda (R$)</label>
+              <input
+                id="calc-venda"
+                inputMode="decimal"
+                value={calcVenda}
+                onChange={(e) => setCalcVenda(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="calc-pct">% do garçom</label>
+              <input
+                id="calc-pct"
+                inputMode="decimal"
+                value={calcPct}
+                onChange={(e) => setCalcPct(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="calc-result">
+            <div className="calc-line">
+              <span>Do garçom:</span>
+              <strong>{brl(calcComissaoCents)}</strong>
+            </div>
+            <div className="calc-line">
+              <span>Fica pro restaurante:</span>
+              <strong>{brl(calcRestauranteCents)}</strong>
+            </div>
           </div>
         </div>
 

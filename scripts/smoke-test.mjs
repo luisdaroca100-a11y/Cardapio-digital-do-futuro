@@ -1222,6 +1222,83 @@ section('18 · Cadastro realizado com sucesso');
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* 19 · Apresentação rica: vias, financeiro e calculadora             */
+/* ------------------------------------------------------------------ */
+section('19 · Apresentação rica: vias, financeiro e calculadora');
+{
+  const homeSrc = pageSrc.slice(
+    pageSrc.indexOf('function HomeView'),
+    pageSrc.indexOf('/* ------------------- DONO: DASHBOARD'),
+  );
+  // Vias em formato de cupom térmico (reutilizam .ticket).
+  check(
+    'via da cozinha em cupom térmico',
+    homeSrc.includes('COZINHA') && homeSrc.includes('className="ticket"'),
+  );
+  check(
+    'via do bar com o jeito de servir a bebida',
+    homeSrc.includes('BAR') && homeSrc.includes('copo com limão e gelo'),
+  );
+  check(
+    'via do balcão (CONTA) com valores e total',
+    homeSrc.includes('CONTA') && homeSrc.includes('R$ 39,03'),
+  );
+  check(
+    'via da cozinha e do bar sem valores (aviso)',
+    homeSrc.includes('sem valores'),
+  );
+  check(
+    'conta do exemplo confere: 28,90 + 8,99 = 37,89, taxa 1,14',
+    homeSrc.includes('R$ 37,89') && homeSrc.includes('R$ 1,14'),
+  );
+  // Financeiro do dono.
+  check(
+    'seção do financeiro do dono',
+    homeSrc.includes('O financeiro do dono'),
+  );
+  check(
+    'financeiro: comissão calculada sozinha',
+    homeSrc.includes('Comissão calculada sozinha'),
+  );
+  check(
+    'financeiro: finalizar o dia e reabrir às 9h',
+    homeSrc.includes('finalizar o dia') && homeSrc.includes('9h'),
+  );
+  // Calculadora de comissão — exemplo do Luis: R$ 200,00 a 8% =
+  // R$ 16,00 do garçom, R$ 184,00 pro restaurante.
+  check(
+    'calculadora de comissão existe',
+    homeSrc.includes('Calculadora de comissão'),
+  );
+  check(
+    'calculadora começa com R$ 200 e 8% (exemplo)',
+    homeSrc.includes("useState('200')") &&
+      homeSrc.includes("useState('8')"),
+  );
+  check(
+    'calculadora mostra quanto é do garçom',
+    homeSrc.includes('Do garçom:'),
+  );
+  check(
+    'calculadora mostra quanto fica pro restaurante',
+    homeSrc.includes('Fica pro restaurante:'),
+  );
+  const venda = 20000;
+  const pct = 8;
+  const comissao = Math.round((venda * pct) / 100);
+  check(
+    'exemplo: R$ 200,00 a 8% = R$ 16,00 do garçom',
+    comissao === 1600,
+  );
+  check(
+    'exemplo: R$ 200,00 a 8% = R$ 184,00 pro restaurante',
+    venda - comissao === 18400,
+  );
+  check('CSS das vias (.home-tickets)', cssSrc.includes('.home-tickets'));
+  check('CSS da calculadora (.calc-card)', cssSrc.includes('.calc-card'));
+}
+
 section('14 · Build + HTTP');
 {
   const run = (cmd, args) =>

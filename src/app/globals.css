@@ -1277,6 +1277,51 @@ select {
   color: var(--muted);
 }
 
+/* Vias de exemplo na apresentação (reutilizam .ticket) */
+.home-tickets {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 10px 0 8px;
+}
+
+.home-tickets .ticket {
+  margin-bottom: 0;
+}
+
+/* Calculadora de comissão */
+.calc-card {
+  margin: 10px 0 8px;
+}
+
+.calc-card h3 {
+  margin: 0 0 2px;
+}
+
+.calc-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.calc-result {
+  margin-top: 10px;
+  border-top: 1px dashed var(--line);
+  padding-top: 8px;
+}
+
+.calc-line {
+  display: flex;
+  justify-content: space-between;
+  font-size: 15px;
+  padding: 4px 0;
+}
+
+.calc-line strong {
+  color: var(--purple);
+}
+
 /* Rodapé da apresentação — link discreto pra quem já tem conta */
 .home-footer {
   margin: 18px 0 8px;
