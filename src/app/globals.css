@@ -1822,7 +1822,7 @@ select {
   text-shadow: 0 1px 6px rgba(0, 0, 0, 0.65);
 }
 
-/* Maquete de celular da tela de Mesas */
+/* Moldura de celular (carrossel "Veja o sistema funcionando") */
 .landing-phone {
   width: 230px;
   margin: 0 auto 10px;
@@ -1838,71 +1838,6 @@ select {
   border-radius: 18px;
   overflow: hidden;
   color: var(--ink);
-}
-
-.landing-phone-head {
-  background: var(--blue);
-  color: #fff;
-  font-size: 14px;
-  font-weight: 800;
-  text-align: center;
-  padding: 8px;
-}
-
-.landing-phone-search {
-  margin: 8px;
-  border-bottom: 1px solid var(--line);
-  font-size: 10px;
-  color: var(--muted);
-  padding-bottom: 4px;
-}
-
-.landing-phone-label {
-  font-size: 10px;
-  font-weight: 800;
-  color: var(--ink);
-  padding: 6px 8px 2px;
-  text-align: left;
-}
-
-.landing-phone-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
-  padding: 0 8px 10px;
-}
-
-.landing-phone-grid span {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 40px;
-  border-radius: 8px;
-  font-size: 11px;
-  font-weight: 800;
-  text-align: center;
-}
-
-.landing-phone-grid small {
-  font-size: 8px;
-  font-weight: 700;
-  line-height: 1.1;
-}
-
-.lp-green {
-  background: #43a047;
-  color: #fff;
-}
-
-.lp-amber {
-  background: #e6a817;
-  color: #fff;
-}
-
-.lp-gray {
-  background: #757575;
-  color: #fff;
 }
 
 /* Hero com vídeo de ambiente ao fundo. O vídeo tem que ser VISTO:

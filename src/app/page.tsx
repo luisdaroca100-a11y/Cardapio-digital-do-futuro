@@ -3764,36 +3764,6 @@ function HomeView({
             <span>✓ Suporte 24 horas</span>
             <span>✓ Dados separados</span>
           </div>
-          <div className="landing-phone" aria-hidden>
-            <div className="landing-phone-screen">
-              <div className="landing-phone-head">Mesas</div>
-              <div className="landing-phone-search">
-                Digite o nº da mesa...
-              </div>
-              <div className="landing-phone-label">
-                Pedidos em andamento (3)
-              </div>
-              <div className="landing-phone-grid">
-                <span className="lp-green">
-                  01<small>Carlos</small>
-                </span>
-                <span className="lp-green">
-                  03<small>Ana</small>
-                </span>
-                <span className="lp-green">
-                  07<small>Carlos</small>
-                </span>
-                <span className="lp-amber">08 🔒</span>
-              </div>
-              <div className="landing-phone-label">Mesas livres (4)</div>
-              <div className="landing-phone-grid">
-                <span className="lp-gray">ABRIR 02</span>
-                <span className="lp-gray">ABRIR 04</span>
-                <span className="lp-gray">ABRIR 05</span>
-                <span className="lp-gray">ABRIR 06</span>
-              </div>
-            </div>
-          </div>
         </div>
 
         <div className="section-title">Veja o sistema funcionando</div>

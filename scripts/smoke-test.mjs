@@ -1376,9 +1376,10 @@ section('20 · Landing escura igual à da versão de teste');
     homeSrc.includes('id="como-funciona"'),
   );
   check(
-    'maquete de celular da tela de Mesas no hero',
-    homeSrc.includes('landing-phone') &&
-      homeSrc.includes('landing-phone-grid'),
+    'maquete do hero removida (só o carrossel usa a moldura de celular)',
+    !homeSrc.includes('landing-phone-grid') &&
+      !homeSrc.includes('landing-phone-head') &&
+      homeSrc.includes('landing-phone showcase-phone'),
   );
   // A landing sempre abre rolada pro topo.
   check(
@@ -1500,15 +1501,24 @@ section('21 · Port do artefato');
   const dashSrc = pageSrc.slice(dashStart, dashEnd);
   const waiterSrc = pageSrc.slice(0, dashStart);
 
-  // Apresentação: menu, ordem das seções e maquete.
+  // Apresentação: menu e ordem das seções.
   has(homeSrc, 'Pro garçom', 'landing: menu "Pro garçom"');
   has(homeSrc, 'Pro dono', 'landing: menu "Pro dono"');
   has(homeSrc, 'landing-nav', 'landing: menu desktop (some no mobile)');
   has(homeSrc, 'Sem instalar nada', 'landing: checklist "Sem instalar nada"');
   has(homeSrc, 'Dados separados', 'landing: checklist "Dados separados"');
-  has(homeSrc, 'Pedidos em andamento (3)', 'landing: maquete "Pedidos em andamento (3)"');
-  has(homeSrc, 'Mesas livres (4)', 'landing: maquete "Mesas livres (4)"');
-  has(homeSrc, 'lp-amber', 'landing: maquete com quadrado âmbar (mesa de outro)');
+  check(
+    'landing: maquete do hero removida (sem "Pedidos em andamento (3)")',
+    !homeSrc.includes('Pedidos em andamento (3)'),
+  );
+  check(
+    'landing: maquete do hero removida (sem "Mesas livres (4)")',
+    !homeSrc.includes('Mesas livres (4)'),
+  );
+  check(
+    'landing: maquete do hero removida (sem quadrado âmbar lp-amber)',
+    !homeSrc.includes('lp-amber'),
+  );
   check(
     'landing: Dúvidas frequentes vem ANTES de Planos na página',
     homeSrc.indexOf('Dúvidas frequentes') < homeSrc.indexOf('id="planos"'),
@@ -2366,7 +2376,7 @@ section('26 · Apresentação com carrossel de mídia (Parte 1)');
     'CSS: movimento reduzido desliga o zoom',
     cssSrc.includes('@media (prefers-reduced-motion: reduce)'),
   );
-  // Mobile: a moldura do carrossel é a mesma do hero (230px) — cabe
+  // Mobile: a moldura do carrossel (230px) — cabe
   // no celular sem estourar a largura.
   check(
     'carrossel usa a moldura de celular de 230px (.landing-phone)',
