@@ -1086,6 +1086,43 @@ section('16 · Apresentação (primeira tela)');
   );
 }
 
+section('17 · Botão flutuante não cobre os planos');
+{
+  const homeSrc = pageSrc.slice(
+    pageSrc.indexOf('function HomeView'),
+    pageSrc.indexOf('/* ------------------- DONO: DASHBOARD'),
+  );
+  check(
+    'espaço no fim da apresentação (.content.home com padding inferior)',
+    cssSrc.includes('.content.home') &&
+      cssSrc.includes('padding-bottom: 96px'),
+  );
+  check(
+    'botão flutuante menor (48px, não 56px)',
+    /\.wa-float\s*\{[^}]*width:\s*48px/.test(cssSrc),
+  );
+  check(
+    'estado escondido do botão (.wa-float.wa-hidden com opacity 0)',
+    cssSrc.includes('.wa-float.wa-hidden') &&
+      cssSrc.includes('opacity: 0'),
+  );
+  check(
+    'grade de planos tem ref pra medir a posição',
+    homeSrc.includes('ref={plansRef}'),
+  );
+  check(
+    'botão some enquanto os planos estão na faixa dele',
+    homeSrc.includes("hideWa ? 'wa-float wa-hidden' : 'wa-float'") &&
+      homeSrc.includes('getBoundingClientRect') &&
+      homeSrc.includes('innerHeight - 76'),
+  );
+  check(
+    'posição do botão é reavaliada ao rolar e ao redimensionar',
+    homeSrc.includes("addEventListener('scroll'") &&
+      homeSrc.includes("addEventListener('resize'"),
+  );
+}
+
 section('14 · Build + HTTP');
 {
   const run = (cmd, args) =>

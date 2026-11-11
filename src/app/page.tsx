@@ -1,6 +1,6 @@
 'use client';
 
-import { Component, useCallback, useEffect, useState } from 'react';
+import { Component, useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import QRCode from 'qrcode';
 import * as store from '@/lib/store';
@@ -31,6 +31,7 @@ type View =
   | 'setup'
   | 'login'
   | 'register'
+  | 'register-success'
   | 'tables'
   | 'order'
   | 'serve'
@@ -213,6 +214,12 @@ function GarcomApp() {
   const [ownerSession, setOwnerSession] = useState<Session | null>(null);
   /** tela de acesso do dono (null = login do garçom) */
   const [ownerAuth, setOwnerAuth] = useState(false);
+  /** login criado no cadastro — pré-preenchido na tela de login do
+   * dono quando ele vem da tela de "Cadastro realizado com sucesso" */
+  const [registeredLogin, setRegisteredLogin] = useState('');
+  /** nome do restaurante recém-cadastrado (tela de sucesso) */
+  const [registeredRestaurantName, setRegisteredRestaurantName] =
+    useState('');
   const [waiters, setWaiters] = useState<Waiter[]>([]);
   /** contas fechadas p/ o financeiro do dono */
   const [ownerBills, setOwnerBills] = useState<ClosedBill[]>([]);
@@ -3127,13 +3134,37 @@ function HomeView({
   onLogin: () => void;
   onRegister: () => void;
 }) {
+  // O botão flutuante de WhatsApp fica fixo no canto inferior direito
+  // e cobria o preço do plano Anual quando a grade de planos passava
+  // por baixo dele. Enquanto a grade estiver na faixa do botão
+  // (~76px do fim da tela), o botão se esconde — o preço dos dois
+  // planos fica sempre legível ao rolar.
+  const plansRef = useRef<HTMLDivElement | null>(null);
+  const [hideWa, setHideWa] = useState(false);
+  useEffect(() => {
+    const update = () => {
+      const el = plansRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setHideWa(
+        r.bottom > window.innerHeight - 76 && r.top < window.innerHeight,
+      );
+    };
+    update();
+    window.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update);
+      window.removeEventListener('resize', update);
+    };
+  }, []);
   return (
     <div className="app">
       <div className="hero">
         <h1>Sistema do Garçom</h1>
         <p>Pedidos, mesas e financeiro num só lugar.</p>
       </div>
-      <div className="content">
+      <div className="content home">
         <button
           className="btn btn-orange home-cta"
           onClick={onRegister}
@@ -3178,7 +3209,7 @@ function HomeView({
           Cadastre seu restaurante e use <strong>3 dias grátis</strong>.
           Depois, escolha o plano:
         </p>
-        <div className="plan-grid">
+        <div className="plan-grid" ref={plansRef}>
           <div className="plan-card">
             <strong>Mensal</strong>
             <span className="plan-price">R$ 69,99/mês</span>
@@ -3229,11 +3260,13 @@ function HomeView({
       </div>
 
       <a
-        className="wa-float"
+        className={hideWa ? 'wa-float wa-hidden' : 'wa-float'}
         href="https://wa.me/5519971995144?text=Ol%C3%A1!%20Quero%20saber%20mais%20sobre%20o%20sistema%20do%20restaurante."
         target="_blank"
         rel="noreferrer"
         aria-label="Falar no WhatsApp"
+        aria-hidden={hideWa}
+        tabIndex={hideWa ? -1 : 0}
       >
         💬
       </a>
