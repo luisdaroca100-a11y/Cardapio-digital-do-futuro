@@ -1,10 +1,12 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import { COMANDAJA_LOGO } from '@/lib/logo';
 
 export const metadata: Metadata = {
   title: 'ComandaJá',
   description:
     'Mesas, pedidos, cozinha, bar e balcão — ComandaJá para restaurantes.',
+  icons: { icon: COMANDAJA_LOGO },
 };
 
 export const viewport: Viewport = {

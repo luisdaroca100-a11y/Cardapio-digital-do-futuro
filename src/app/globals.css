@@ -1727,6 +1727,33 @@ select {
   white-space: nowrap;
 }
 
+/* Marca: emblema da logo ao lado do nome, no cabeçalho. */
+.landing-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.brand-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: 0 0 auto;
+}
+
+/* Logo na tela de login, acima do título. */
+.login-logo {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+  margin: 0 auto 10px;
+}
+
 .landing-nav {
   display: flex;
   gap: 12px;
@@ -1750,6 +1777,14 @@ select {
 @media (max-width: 640px) {
   .landing-nav {
     display: none;
+  }
+  /* Emblema menor no celular pra caber junto com o botão. */
+  .brand-logo {
+    width: 32px;
+    height: 32px;
+  }
+  .landing-brand {
+    gap: 6px;
   }
 }
 

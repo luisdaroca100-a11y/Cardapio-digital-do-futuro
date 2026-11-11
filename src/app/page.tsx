@@ -40,6 +40,7 @@ import {
   sectorLabel,
 } from '@/lib/escpos';
 import { LANDING_HERO_POSTER, LANDING_HERO_VIDEO, LANDING_PRINTS } from '@/lib/landing-media';
+import { COMANDAJA_LOGO } from '@/lib/logo';
 
 type View =
   | 'home'
@@ -1741,6 +1742,7 @@ function GarcomApp() {
         ) : adminAuth ? (
           <>
             <div className="hero">
+              <img className="login-logo" src={COMANDAJA_LOGO} alt="Logo ComandaJá" />
               <h1>ComandaJá</h1>
               <p>Entre com o seu acesso para abrir as mesas.</p>
             </div>
@@ -1759,6 +1761,7 @@ function GarcomApp() {
         ) : (
           <>
             <div className="hero">
+              <img className="login-logo" src={COMANDAJA_LOGO} alt="Logo ComandaJá" />
               <div className="eyebrow">Restaurante</div>
               <h1>
                 {waiterOnly ? 'Acesso do garçom' : 'Entrar no sistema'}
@@ -4350,7 +4353,10 @@ function HomeView({
   return (
     <div className="app landing">
       <div className="landing-header">
-        <strong>ComandaJá</strong>
+        <span className="landing-brand">
+          <img className="brand-logo" src={COMANDAJA_LOGO} alt="Logo ComandaJá" />
+          <strong>ComandaJá</strong>
+        </span>
         <nav className="landing-nav" aria-label="Menu">
           <a href="#como-funciona">Como funciona</a>
           <a href="#pro-garcom">Pro garçom</a>

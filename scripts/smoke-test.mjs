@@ -36,6 +36,8 @@ const mediaSrc = readFileSync(
   path.join(ROOT, 'src/lib/landing-media.ts'),
   'utf8',
 );
+const layoutSrc = readFileSync(path.join(ROOT, 'src/app/layout.tsx'), 'utf8');
+const logoSrc = readFileSync(path.join(ROOT, 'src/lib/logo.ts'), 'utf8');
 
 let pass = 0;
 let fail = 0;
@@ -2973,6 +2975,66 @@ section('28 · Impressão automática (Parte 4 — impressoras)');
   has(storeSrc, 'retryPrintJob', 'store: retryPrintJob');
   has(storeSrc, 'getPrinterConfig', 'store: getPrinterConfig');
   has(storeSrc, 'savePrinterConfig', 'store: savePrinterConfig');
+}
+
+section('29 · Logo ComandaJá (versão 2 aprovada)');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  // Data URI válido: WebP base64 que decodifica de volta (começa com RIFF).
+  check(
+    'logo: data URI WebP embutido',
+    logoSrc.includes('data:image/webp;base64,'),
+  );
+  check(
+    'logo: base64 decodifica (WebP válido)',
+    (() => {
+      const m = logoSrc.match(/data:image\/webp;base64,([A-Za-z0-9+/=]+)/);
+      if (!m) return false;
+      const buf = Buffer.from(m[1], 'base64');
+      return buf.length > 1000 && buf.subarray(0, 4).toString() === 'RIFF';
+    })(),
+  );
+  check(
+    'logo: embutido modesto (módulo < 150KB)',
+    logoSrc.length < 150000,
+  );
+  // Cabeçalho da apresentação: emblema ao lado da marca.
+  has(
+    pageSrc,
+    'className="landing-brand"',
+    'landing: marca com emblema no cabeçalho',
+  );
+  has(
+    pageSrc,
+    'className="brand-logo"',
+    'landing: img do emblema no cabeçalho',
+  );
+  check(
+    'landing: emblema usa o data URI (COMANDAJA_LOGO)',
+    pageSrc.includes('src={COMANDAJA_LOGO}') &&
+      pageSrc.includes("import { COMANDAJA_LOGO } from '@/lib/logo'"),
+  );
+  // Tela de login: emblema acima do título (login do garçom/dono e /adm).
+  check(
+    'login: emblema nas duas telas de login',
+    (pageSrc.match(/className="login-logo"/g) || []).length === 2,
+  );
+  // CSS: tamanhos certos e redondo.
+  check(
+    'CSS: emblema do cabeçalho 40px e redondo (32px no celular)',
+    /\.brand-logo \{[^}]*width: 40px;[^}]*border-radius: 50%/.test(cssSrc) &&
+      /\.brand-logo \{[^}]*width: 32px;/.test(cssSrc),
+  );
+  check(
+    'CSS: logo do login 96px e centralizada',
+    /\.login-logo \{[^}]*width: 96px;[^}]*margin: 0 auto 10px/.test(cssSrc),
+  );
+  // Favicon: data URI no metadata.
+  has(
+    layoutSrc,
+    'icons: { icon: COMANDAJA_LOGO }',
+    'favicon: logo no metadata',
+  );
 }
 
 console.log(`\n========================================`);
