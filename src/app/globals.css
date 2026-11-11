@@ -1772,6 +1772,9 @@ select {
   font-weight: 800;
   line-height: 1.15;
   color: #f6eee2;
+  text-shadow:
+    0 1px 10px rgba(0, 0, 0, 0.7),
+    0 0 3px rgba(0, 0, 0, 0.55);
 }
 
 .landing-accent {
@@ -1783,6 +1786,7 @@ select {
   font-size: 15px;
   line-height: 1.55;
   color: #bfae97;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.65);
 }
 
 .landing-hero-btns {
@@ -1815,6 +1819,7 @@ select {
   font-size: 14px;
   font-weight: 600;
   color: #f6eee2;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.65);
 }
 
 /* Maquete de celular da tela de Mesas */
@@ -1900,9 +1905,10 @@ select {
   color: #fff;
 }
 
-/* Hero com vídeo de ambiente ao fundo (só quando o aparelho não pede
- * movimento reduzido — nesse caso o vídeo nem é renderizado). O vídeo
- * fica bem escurecido atrás do conteúdo, sem cobrir texto. */
+/* Hero com vídeo de ambiente ao fundo. O vídeo tem que ser VISTO:
+ * opacidade alta e véu claro — com sombra no texto para continuar
+ * legível. Com movimento reduzido o vídeo vira um quadro estático
+ * (poster) em vez de sumir. */
 .landing-hero {
   position: relative;
   overflow: hidden;
@@ -1915,7 +1921,7 @@ select {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  opacity: 0.32;
+  opacity: 0.65;
   pointer-events: none;
 }
 
@@ -1924,8 +1930,8 @@ select {
   inset: 0;
   background: linear-gradient(
     180deg,
-    rgba(23, 17, 12, 0.55),
-    rgba(23, 17, 12, 0.85)
+    rgba(23, 17, 12, 0.35),
+    rgba(23, 17, 12, 0.6)
   );
   pointer-events: none;
 }

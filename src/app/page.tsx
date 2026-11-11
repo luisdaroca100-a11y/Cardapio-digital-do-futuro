@@ -26,7 +26,7 @@ import type {
   Settings,
   Waiter,
 } from '@/lib/types';
-import { LANDING_HERO_VIDEO, LANDING_PRINTS } from '@/lib/landing-media';
+import { LANDING_HERO_POSTER, LANDING_HERO_VIDEO, LANDING_PRINTS } from '@/lib/landing-media';
 
 type View =
   | 'home'
@@ -3580,7 +3580,7 @@ function HomeView({
   // Carrossel "Veja o sistema funcionando": prints reais das telas,
   // avançando sozinhos. Pausa no toque/hover e respeita
   // prefers-reduced-motion (sem avanço automático nem zoom; o vídeo
-  // do hero nem é renderizado nesse caso).
+  // do hero vira um quadro estático (poster) nesse caso).
   const [reducedMotion, setReducedMotion] = useState(false);
   const [slide, setSlide] = useState(0);
   const [carouselPaused, setCarouselPaused] = useState(false);
@@ -3708,7 +3708,14 @@ function HomeView({
       </div>
       <div className="content home landing-content">
         <div className="landing-hero">
-          {!reducedMotion && (
+          {reducedMotion ? (
+            <img
+              className="landing-hero-video"
+              src={LANDING_HERO_POSTER}
+              alt=""
+              aria-hidden
+            />
+          ) : (
             <video
               className="landing-hero-video"
               src={LANDING_HERO_VIDEO}
@@ -3716,6 +3723,7 @@ function HomeView({
               muted
               loop
               playsInline
+              preload="auto"
               aria-hidden
             />
           )}

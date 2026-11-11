@@ -2304,18 +2304,29 @@ section('26 · Apresentação com carrossel de mídia (Parte 1)');
       homeSrc.includes('playsInline'),
   );
   check(
+    'vídeo do hero com preload="auto" (carrega no celular)',
+    homeSrc.includes('preload="auto"'),
+  );
+  check(
     'véu escuro sobre o vídeo do hero (texto legível)',
     homeSrc.includes('landing-hero-veil'),
   );
-  // Movimento reduzido: sem vídeo, sem avanço automático, sem zoom.
+  // Movimento reduzido: o vídeo vira um quadro estático (poster) —
+  // o hero nunca fica sem imagem.
   check(
     'respeita prefers-reduced-motion (matchMedia)',
     homeSrc.includes("matchMedia('(prefers-reduced-motion: reduce)')"),
   );
   check(
-    'sem vídeo do hero quando o aparelho pede movimento reduzido',
-    homeSrc.includes('{!reducedMotion && (') &&
-      homeSrc.includes('landing-hero-video'),
+    'com movimento reduzido mostra quadro estático (poster) em vez do vídeo',
+    homeSrc.includes('LANDING_HERO_POSTER') &&
+      homeSrc.includes('{reducedMotion ? (') &&
+      homeSrc.includes('<img') &&
+      homeSrc.includes('className="landing-hero-video"'),
+  );
+  check(
+    'poster do hero existe em data URI (jpeg)',
+    (mediaSrc.match(/data:image\/jpeg;base64,/g) || []).length === 1,
   );
   check(
     'sem avanço automático com movimento reduzido',
@@ -2338,8 +2349,18 @@ section('26 · Apresentação com carrossel de mídia (Parte 1)');
     cssSrc.includes('.landing-hero-video'),
   );
   check(
-    'CSS: vídeo do hero bem escurecido (opacity 0.32)',
-    cssSrc.includes('opacity: 0.32'),
+    'CSS: vídeo do hero BEM visível (opacity 0.65)',
+    cssSrc.includes('opacity: 0.65'),
+  );
+  check(
+    'CSS: véu claro sobre o vídeo (0.35 no topo, 0.6 embaixo)',
+    cssSrc.includes('rgba(23, 17, 12, 0.35)') &&
+      cssSrc.includes('rgba(23, 17, 12, 0.6)'),
+  );
+  check(
+    'CSS: sombra no texto do hero (legível sobre o vídeo)',
+    cssSrc.includes('.landing-hero h1') &&
+      cssSrc.includes('text-shadow'),
   );
   check(
     'CSS: movimento reduzido desliga o zoom',
