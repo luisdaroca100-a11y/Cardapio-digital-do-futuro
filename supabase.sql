@@ -175,17 +175,24 @@ alter table public.orders enable row level security;
 alter table public.order_items enable row level security;
 alter table public.closed_bills enable row level security;
 
+drop policy if exists "dono_all_owners" on public.owners;
 create policy "dono_all_owners" on public.owners
   for all using (true) with check (true);
+drop policy if exists "garcom_all_waiters" on public.waiters;
 create policy "garcom_all_waiters" on public.waiters
   for all using (true) with check (true);
+drop policy if exists "garcom_all_products" on public.products;
 create policy "garcom_all_products" on public.products
   for all using (true) with check (true);
+drop policy if exists "garcom_all_settings" on public.settings;
 create policy "garcom_all_settings" on public.settings
   for all using (true) with check (true);
+drop policy if exists "garcom_all_orders" on public.orders;
 create policy "garcom_all_orders" on public.orders
   for all using (true) with check (true);
+drop policy if exists "garcom_all_order_items" on public.order_items;
 create policy "garcom_all_order_items" on public.order_items
   for all using (true) with check (true);
+drop policy if exists "garcom_all_closed_bills" on public.closed_bills;
 create policy "garcom_all_closed_bills" on public.closed_bills
   for all using (true) with check (true);
