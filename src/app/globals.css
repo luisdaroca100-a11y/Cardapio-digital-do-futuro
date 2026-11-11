@@ -2111,3 +2111,113 @@ select {
 .landing .home-footer .owner-link {
   color: #a08a76;
 }
+
+/* ---------- tutorial do garçom (Parte 4) ---------- */
+/* Bloqueia os toques no app durante o tour — o tour navega sozinho
+ * pelos botões do balão. Escurece levemente o resto da tela. */
+.tour-blocker {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.28);
+  z-index: 40;
+}
+
+/* Anel laranja pulsante no elemento destacado do passo. */
+.tour-highlight {
+  outline: 3px solid #f26a3d !important;
+  outline-offset: 3px;
+  border-radius: 12px;
+  animation: tour-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes tour-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 4px rgba(242, 106, 61, 0.28);
+  }
+  50% {
+    box-shadow: 0 0 0 9px rgba(242, 106, 61, 0.14);
+  }
+}
+
+/* Balão do passo: fixo embaixo (ou em cima, quando o destacado fica
+ * na barra de baixo), largura de celular, sem estourar a tela. */
+.tour-balloon {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  max-width: 480px;
+  margin: 0 auto;
+  z-index: 60;
+  background: #fff;
+  color: var(--ink);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+.tour-balloon-top {
+  top: calc(12px + env(safe-area-inset-top));
+  bottom: auto;
+}
+
+.tour-demo-tag {
+  display: inline-block;
+  background: #f26a3d;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 4px 8px;
+  border-radius: 999px;
+  margin-bottom: 8px;
+}
+
+.tour-progress {
+  font-size: 12px;
+  font-weight: 800;
+  color: #f26a3d;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tour-balloon h3 {
+  margin: 2px 0 6px;
+  font-size: 17px;
+}
+
+.tour-balloon p {
+  margin: 0 0 12px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: #444;
+}
+
+.tour-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.tour-actions .btn {
+  flex: 1;
+}
+
+.tour-skip {
+  display: block;
+  margin: 10px auto 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-highlight {
+    animation: none;
+  }
+}

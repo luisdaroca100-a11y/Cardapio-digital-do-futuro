@@ -197,6 +197,108 @@ const SERVE_OPTIONS = [
   'só copo',
 ];
 
+/* ------------------------------------------------------------------ */
+/* TUTORIAL DO GARÇOM (Parte 4) — tour guiado nas telas de verdade   */
+/*                                                                    */
+/* O tour anda pelas telas reais do garçom (mesas → pedido → como     */
+/* servir → resumo → revisar → fechar mesa) com um balão curto por    */
+/* passo. O pedido mostrado é SÓ EM MEMÓRIA (id vazio, como o        */
+/* rascunho de mesa aberta sem item): nenhuma função do tour chama   */
+/* store.createOrder / addItem / sendOrder / closeOrder — nada é      */
+/* gravado, nenhuma mesa trava de verdade, nada vai pra cozinha,     */
+/* bar ou balcão. Ao terminar ou pular, o garçom cai na grade de      */
+/* Mesas limpa. O "visto" é guardado no aparelho, por login do        */
+/* garçom — em outro celular o tour aparece de novo.                  */
+/* ------------------------------------------------------------------ */
+
+/** Chave do "visto" no aparelho, por login do garçom. */
+const TOUR_SEEN_PREFIX = 'tutorial_garcom_visto_v1_';
+
+/** Quantidade de passos do tour. */
+const TOUR_STEP_COUNT = 7;
+
+type TourStep = {
+  id: string;
+  title: string;
+  text: string;
+  /** tela real que o passo mostra */
+  view: View;
+  /** seletores do elemento destacado (tenta em ordem) */
+  selectors: string[];
+  /** 'top' quando o destacado fica na barra de baixo (REVISAR /
+   * Fechar mesa): o balão vai pra cima pra não cobrir o botão */
+  balloon: 'top' | 'bottom';
+};
+
+/** Textos do tour — curtos, diretos, no tom do sistema. O passo
+ * "como servir" muda conforme o tipo da bebida de demonstração. */
+function getTourSteps(drinkType: DrinkType): TourStep[] {
+  const serveText =
+    drinkType === 'cerveja'
+      ? 'Bebida sempre pergunta como vai ser servida. Cerveja pergunta se precisa de copos e quantos — se não precisar, entra como "sem copos". A escolha vai na via do bar.'
+      : drinkType === 'torre'
+        ? 'Bebida sempre pergunta como vai ser servida. Torre de chopp pergunta quantas canecas vão precisar. A escolha vai na via do bar.'
+        : 'Bebida sempre pergunta como vai ser servida: são 4 quadradinhos — copo com limão e gelo, só limão, só gelo ou só copo. A escolha vai na via do bar.';
+  return [
+    {
+      id: 'mesas',
+      title: 'Suas mesas',
+      text: 'Aqui você vê todas as mesas. Em cima, os pedidos em andamento: verde é mesa sua; laranja com cadeado é de outro garçom — essa você não abre. Embaixo, as mesas livres, em cinza, com ABRIR.',
+      view: 'tables',
+      selectors: ['[data-tour="mesas-livres"]', '[data-tour="mesas-livres-titulo"]'],
+      balloon: 'bottom',
+    },
+    {
+      id: 'abrir-mesa',
+      title: 'Abrir uma mesa',
+      text: 'Toque em ABRIR numa mesa livre pra começar o pedido. Só quem abre a mesa mexe nela depois — e a mesa só fica ocupada quando você adicionar o primeiro item.',
+      view: 'tables',
+      selectors: ['[data-tour="mesa-livre"]', '[data-tour="mesas-livres-titulo"]'],
+      balloon: 'bottom',
+    },
+    {
+      id: 'buscar-produto',
+      title: 'Buscar o produto',
+      text: 'Na tela do pedido, use a busca pra achar o produto pelo nome, ou toque numa categoria laranja. O cliente escolhe no cardápio de papel e você anota aqui.',
+      view: 'order',
+      selectors: ['[data-tour="busca-produto"]'],
+      balloon: 'bottom',
+    },
+    {
+      id: 'como-servir',
+      title: 'Como servir a bebida',
+      text: serveText,
+      view: 'serve',
+      selectors: ['[data-tour="opcoes-servir"]'],
+      balloon: 'bottom',
+    },
+    {
+      id: 'resumo',
+      title: 'Resumo do pedido',
+      text: 'Aqui você confere tudo antes de enviar: toque em + ou − pra mudar a quantidade, em Retirar pra tirar um item, e em "Adicionar produtos" pra pedir mais.',
+      view: 'summary',
+      selectors: ['[data-tour="resumo-item"]', '[data-tour="adicionar-produtos"]'],
+      balloon: 'bottom',
+    },
+    {
+      id: 'revisar',
+      title: 'Revisar antes de enviar',
+      text: 'Antes de mandar pra cozinha ou pro bar, toque em REVISAR pra conferir o resumo. Nada vai pra cozinha sem você revisar.',
+      view: 'order',
+      selectors: ['[data-tour="btn-revisar"]'],
+      balloon: 'top',
+    },
+    {
+      id: 'fechar-mesa',
+      title: 'Fechar a mesa',
+      text: 'Com tudo enviado, toque em Fechar mesa: a conta completa sai na impressora do balcão e depois você vê a revisão do que tinha na mesa. A mesa fica livre de novo.',
+      view: 'summary',
+      selectors: ['[data-tour="btn-fechar-mesa"]'],
+      balloon: 'top',
+    },
+  ];
+}
+
 /** Categoria especial: mostra todos os produtos. */
 const ALL_PRODUCTS = '__todos__';
 
@@ -248,6 +350,13 @@ function GarcomApp() {
   const [openingTable, setOpeningTable] = useState<number | null>(null);
   /** menu hambúrguer da tela de mesas (Revisão / Sair) */
   const [menuOpen, setMenuOpen] = useState(false);
+  /** tutorial do garçom (Parte 4): passo atual (0..6) ou null
+   * (tour desligado). Só vale pro garçom — nunca pro dono, /adm ou
+   * apresentação. */
+  const [tour, setTour] = useState<number | null>(null);
+  /** elemento destacado pelo tour (p/ remover o anel ao trocar de
+   * passo ou ao terminar) */
+  const tourTargetRef = useRef<HTMLElement | null>(null);
   /** contas fechadas p/ a tela de Revisão */
   const [closedBills, setClosedBills] = useState<ClosedBill[]>([]);
   /** itens + hora de abertura de cada conta fechada (p/ a Revisão
@@ -420,18 +529,22 @@ function GarcomApp() {
             if (waiter && waiter.id === s.id && rid) {
               store.setActiveRestaurant(rid);
               setRestaurant(await store.getRestaurant(rid));
-              setSession({
+              const restored: Session = {
                 id: waiter.id,
                 name: waiter.name,
                 login: waiter.login,
                 restaurant_id: rid,
-              });
+              };
+              setSession(restored);
               await refresh();
               // Mesas abertas sem nenhum item (restos da regra antiga)
               // voltam a ficar livres.
               await store.cleanupEmptyOrders();
               await refresh();
               setView('tables');
+              // Sessão restaurada: primeira vez deste garçom neste
+              // aparelho abre o tutorial.
+              startTourIfFirstTime(waiter.login, restored);
               return;
             }
           } catch {
@@ -485,6 +598,9 @@ function GarcomApp() {
         safeSet(SESSION_KEY, JSON.stringify(s));
         await refresh();
         setView('tables');
+        // Primeira vez deste garçom neste aparelho: abre o tutorial
+        // (tour guiado nas telas de verdade).
+        startTourIfFirstTime(waiter.login, s);
         return;
       }
       if (waiterOnly) throw new Error('Não foi possível entrar. Tente de novo.');
@@ -507,6 +623,220 @@ function GarcomApp() {
     // Na tela do QR, sair volta pro login do garçom; no resto, pra apresentação.
     setView(waiterOnly ? 'login' : 'home');
   }
+
+  /* ------------------------------ TUTORIAL DO GARÇOM (Parte 4) ------------------------------ */
+
+  /** "Visto" do tour: guardado no aparelho, por login do garçom. */
+  function hasSeenTour(login: string): boolean {
+    return safeGet(TOUR_SEEN_PREFIX + login) === '1';
+  }
+  function markTourSeen(login: string) {
+    safeSet(TOUR_SEEN_PREFIX + login, '1');
+  }
+
+  /** Bebida de demonstração p/ o passo "como servir": de preferência
+   * um refrigerante de verdade do cardápio; senão, cerveja ou torre
+   * de verdade; se não houver bebida com opções no cardápio, uma
+   * Coca fictícia SÓ em memória (nunca é gravada). */
+  function demoServeProduct(): Product {
+    const bar = availableProducts.filter((p) => p.prints_in === 'bar');
+    const withOptions = bar.find(
+      (p) =>
+        p.drink_type === 'refrigerante' ||
+        p.drink_type === 'cerveja' ||
+        p.drink_type === 'torre',
+    );
+    if (withOptions) return withOptions;
+    return {
+      id: 'tour-demo-bebida',
+      name: 'Coca 600ml',
+      price_cents: 899,
+      category: 'Bebidas',
+      prints_in: 'bar',
+      drink_type: 'refrigerante',
+      created_at: '',
+    };
+  }
+
+  /** Rótulo de "como servir" que o item de demonstração carrega. */
+  function demoServeLabel(drinkType: DrinkType): string {
+    if (drinkType === 'cerveja') return '2 copos';
+    if (drinkType === 'torre') return '2 canecas';
+    return SERVE_OPTIONS[0];
+  }
+
+  /** Pedido de demonstração, SÓ EM MEMÓRIA: 1 prato + 1 bebida, com
+   * id vazio — igual ao rascunho de mesa aberta sem item, que nunca
+   * é persistido. `sent` = true deixa tudo como "já enviado" (passo
+   * "Fechar mesa"); false deixa como "a enviar" (resumo/revisar). */
+  function buildDemoOrder(sess: Session | null, sent: boolean): OrderWithItems {
+    const dish =
+      availableProducts.find((p) => p.prints_in === 'kitchen') ??
+      ({
+        id: 'tour-demo-prato',
+        name: 'Casarao 1',
+        price_cents: 15999,
+        category: 'Almoço',
+        prints_in: 'kitchen',
+        drink_type: null,
+        created_at: '',
+      } as Product);
+    const drink = demoServeProduct();
+    const drinkType = drink.drink_type ?? 'refrigerante';
+    const busy = new Set(
+      openOrders.filter((o) => o.items.length > 0).map((o) => o.order.table_number),
+    );
+    const demoTable =
+      Array.from({ length: settings.table_count }, (_, i) => i + 1).find(
+        (n) => !busy.has(n),
+      ) ?? 1;
+    const now = new Date().toISOString();
+    return {
+      order: {
+        id: '',
+        table_number: demoTable,
+        waiter_id: sess?.id ?? '',
+        waiter_name: sess?.name ?? '',
+        status: 'open',
+        created_at: now,
+        closed_at: null,
+      },
+      items: [
+        {
+          id: 'tour-item-1',
+          order_id: '',
+          product_id: dish.id,
+          product_name: dish.name,
+          price_cents: dish.price_cents,
+          qty: 1,
+          note: '',
+          serve: null,
+          sent,
+          created_at: now,
+        },
+        {
+          id: 'tour-item-2',
+          order_id: '',
+          product_id: drink.id,
+          product_name: drink.name,
+          price_cents: drink.price_cents,
+          qty: 1,
+          note: '',
+          serve: demoServeLabel(drinkType),
+          sent,
+          created_at: now,
+        },
+      ],
+    };
+  }
+
+  /** Vai pro passo `i` do tour: navega pra tela real do passo com o
+   * pedido de demonstração (quando o passo precisa dele). Não grava
+   * nada — só muda a tela e o estado em memória. */
+  function applyTourStep(i: number, sess?: Session | null) {
+    const s = sess ?? session;
+    setTour(i);
+    setMenuOpen(false);
+    setError('');
+    setConfirmClose(false);
+    if (i <= 1) {
+      // Grade de Mesas: sem pedido aberto e sem filtro de busca.
+      setCurrentOrder(null);
+      setServeProduct(null);
+      setTableSearch('');
+      setView('tables');
+      return;
+    }
+    if (i === 2 || i === 5) {
+      // Tela de pedir (buscar produto / botão REVISAR): pedido de
+      // demonstração com itens "a enviar" (REVISAR fica habilitado).
+      setCurrentOrder(buildDemoOrder(s, false));
+      setServeProduct(null);
+      setOrderCategory(null);
+      setOrderSearch('');
+      setView('order');
+      return;
+    }
+    if (i === 3) {
+      // Tela de como servir, com a bebida de demonstração.
+      setCurrentOrder(buildDemoOrder(s, false));
+      setServeProduct(demoServeProduct());
+      setBeerCups(null);
+      setServeQty(2);
+      setView('serve');
+      return;
+    }
+    // i === 4 (resumo) ou 6 (fechar mesa): resumo do pedido. No passo
+    // 6 tudo já está como "enviado", pra o botão Fechar mesa ficar
+    // habilitado — igual a uma mesa real pronta pra fechar.
+    setCurrentOrder(buildDemoOrder(s, i === 6));
+    setServeProduct(null);
+    setView('summary');
+  }
+
+  /** Começa o tour do zero (primeiro login ou "Ver tutorial de
+   * novo"). Descarta qualquer rascunho em memória (id vazio = sem
+   * itens, nada gravado) — um pedido já salvo continua no banco e
+   * reabre pela mesa. */
+  function startTour(sess?: Session | null) {
+    applyTourStep(0, sess);
+  }
+
+  /** Abre o tour sozinho só na primeira vez daquele garçom neste
+   * aparelho. */
+  function startTourIfFirstTime(login: string, sess?: Session | null) {
+    if (!hasSeenTour(login)) startTour(sess);
+  }
+
+  /** Termina (ou pula) o tour: grava o "visto", descarta o pedido de
+   * demonstração e cai na grade de Mesas limpa, sem mesa aberta nem
+   * pedido criado. */
+  function endTour() {
+    if (session) markTourSeen(session.login);
+    setTour(null);
+    setCurrentOrder(null);
+    setServeProduct(null);
+    setOrderCategory(null);
+    setOrderSearch('');
+    setMenuOpen(false);
+    setConfirmClose(false);
+    setError('');
+    setView('tables');
+    void refresh();
+  }
+
+  /** Anel laranja no elemento destacado do passo + rola a tela até
+   * ele. Roda depois de cada troca de passo/tela. */
+  useEffect(() => {
+    const prev = tourTargetRef.current;
+    if (tour === null) {
+      if (prev) {
+        prev.classList.remove('tour-highlight');
+        tourTargetRef.current = null;
+      }
+      return;
+    }
+    const steps = getTourSteps(serveProduct?.drink_type ?? 'refrigerante');
+    const step = steps[tour];
+    if (!step) return;
+    let el: HTMLElement | null = null;
+    for (const sel of step.selectors) {
+      el = document.querySelector<HTMLElement>(sel);
+      if (el) break;
+    }
+    if (prev && prev !== el) prev.classList.remove('tour-highlight');
+    if (el) {
+      el.classList.add('tour-highlight');
+      el.scrollIntoView({ block: 'center' });
+      tourTargetRef.current = el;
+    }
+    return () => {
+      if (tourTargetRef.current) {
+        tourTargetRef.current.classList.remove('tour-highlight');
+        tourTargetRef.current = null;
+      }
+    };
+  }, [tour, view, currentOrder, serveProduct]);
 
   /* ------------------------------ DONO: ACESSO ------------------------------ */
 
@@ -1125,6 +1455,58 @@ function GarcomApp() {
     new Set(availableProducts.map((p) => p.category)),
   ).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 
+  /* ------------------------------ TUTORIAL DO GARÇOM: BALÃO ------------------------------ */
+  /** Balão do tour: bloqueia os toques no app (o tour navega
+   * sozinho), mostra o selo "Tutorial · demonstração", o passo
+   * atual com progresso e os botões Voltar / Próximo (Concluir no
+   * último) / Pular tutorial. Nas telas em que o destacado fica na
+   * barra de baixo (REVISAR, Fechar mesa), o balão vai pra cima pra
+   * não cobrir o botão. */
+  const tourSteps =
+    tour === null
+      ? []
+      : getTourSteps(serveProduct?.drink_type ?? 'refrigerante');
+  const tourStep = tour === null ? null : tourSteps[tour] ?? null;
+  const tourOverlay =
+    tour === null || !tourStep ? null : (
+      <>
+        <div className="tour-blocker" aria-hidden />
+        <div
+          className={`tour-balloon${tourStep.balloon === 'top' ? ' tour-balloon-top' : ''}`}
+          role="dialog"
+          aria-label={`Tutorial do garçom, passo ${tour + 1} de ${TOUR_STEP_COUNT}`}
+        >
+          <div className="tour-demo-tag">Tutorial · demonstração</div>
+          <div className="tour-progress">
+            {tour + 1} de {TOUR_STEP_COUNT}
+          </div>
+          <h3>{tourStep.title}</h3>
+          <p>{tourStep.text}</p>
+          <div className="tour-actions">
+            <button
+              className="btn btn-ghost"
+              disabled={tour === 0}
+              onClick={() => applyTourStep(tour - 1)}
+            >
+              ← Voltar
+            </button>
+            <button
+              className="btn btn-green"
+              onClick={() => {
+                if (tour === TOUR_STEP_COUNT - 1) endTour();
+                else applyTourStep(tour + 1);
+              }}
+            >
+              {tour === TOUR_STEP_COUNT - 1 ? 'Concluir' : 'Próximo →'}
+            </button>
+          </div>
+          <button className="tour-skip" onClick={endTour}>
+            Pular tutorial
+          </button>
+        </div>
+      </>
+    );
+
   if (booting) {
     return (
       <div className="app">
@@ -1426,6 +1808,15 @@ function GarcomApp() {
                 <button className="menu-item" onClick={openReview}>
                   Revisão
                 </button>
+                <button
+                  className="menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    startTour();
+                  }}
+                >
+                  Ver tutorial de novo
+                </button>
                 <button className="menu-item" onClick={handleLogout}>
                   Sair
                 </button>
@@ -1473,14 +1864,18 @@ function GarcomApp() {
               );
             })}
           </div>
-          <div className="tables-section-title">
+          <div
+            className="tables-section-title"
+            data-tour="mesas-livres-titulo"
+          >
             Mesas/Comandas livres ({free.length})
           </div>
-          <div className="mesas-grid">
-            {free.map((n) => (
+          <div className="mesas-grid" data-tour="mesas-livres">
+            {free.map((n, idx) => (
               <button
                 key={n}
                 className="mesa-tile free"
+                data-tour={idx === 0 ? 'mesa-livre' : undefined}
                 disabled={busy || dayClosed}
                 onClick={() => openTable(n)}
               >
@@ -1495,6 +1890,7 @@ function GarcomApp() {
             <div className="empty">Nenhuma mesa com esse número.</div>
           )}
         </div>
+        {tourOverlay}
       </div>
     );
   }
@@ -1549,6 +1945,15 @@ function GarcomApp() {
                 <button className="menu-item" onClick={openReview}>
                   Revisão
                 </button>
+                <button
+                  className="menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    startTour();
+                  }}
+                >
+                  Ver tutorial de novo
+                </button>
                 <button className="menu-item" onClick={handleLogout}>
                   Sair
                 </button>
@@ -1557,7 +1962,7 @@ function GarcomApp() {
           )}
         </header>
         <div className="content">
-          <div className="order-search">
+          <div className="order-search" data-tour="busca-produto">
             <input
               id="order-search"
               className="order-search-input"
@@ -1676,6 +2081,7 @@ function GarcomApp() {
           </button>
           <button
             className="btn btn-green"
+            data-tour="btn-revisar"
             disabled={pendingCount === 0}
             onClick={() => {
               setMenuOpen(false);
@@ -1685,6 +2091,7 @@ function GarcomApp() {
             ✓ REVISAR
           </button>
         </div>
+        {tourOverlay}
       </div>
     );
   }
@@ -1718,7 +2125,7 @@ function GarcomApp() {
           {drinkType === 'cerveja' && beerCups === null ? (
             <>
               <p className="serve-q">Precisa de copos?</p>
-              <div className="cat-grid">
+              <div className="cat-grid" data-tour="opcoes-servir">
                 <button
                   className="serve-tile"
                   onClick={() => void chooseBeerCups(true)}
@@ -1740,7 +2147,7 @@ function GarcomApp() {
                   ? 'Quantas canecas vai precisar?'
                   : 'Quantos copos?'}
               </p>
-              <div className="serve-qty">
+              <div className="serve-qty" data-tour="opcoes-servir">
                 <button
                   aria-label="Diminuir"
                   onClick={() => setServeQty((q) => Math.max(1, q - 1))}
@@ -1767,7 +2174,7 @@ function GarcomApp() {
           ) : (
             <>
               <p className="serve-q">Como a bebida vai ser servida?</p>
-              <div className="cat-grid">
+              <div className="cat-grid" data-tour="opcoes-servir">
                 {SERVE_OPTIONS.map((opt) => (
                   <button
                     key={opt}
@@ -1781,6 +2188,7 @@ function GarcomApp() {
             </>
           )}
         </div>
+        {tourOverlay}
       </div>
     );
   }
@@ -1813,9 +2221,10 @@ function GarcomApp() {
               Nenhum item novo. Toque em “Adicionar produtos” para pedir.
             </div>
           )}
-          {pendingItems.map((item) => (
+          {pendingItems.map((item, idx) => (
             <ItemRow
               key={item.id}
+              dataTour={idx === 0 ? 'resumo-item' : undefined}
               item={item}
               station={
                 products.find((p) => p.id === item.product_id)
@@ -1928,6 +2337,7 @@ function GarcomApp() {
         <div className="bottom-bar">
           <button
             className="btn btn-outline-purple"
+            data-tour="adicionar-produtos"
             onClick={() => {
               setOrderCategory(null);
               setOrderSearch('');
@@ -1938,6 +2348,7 @@ function GarcomApp() {
           </button>
           <button
             className="btn btn-green"
+            data-tour="btn-fechar-mesa"
             disabled={
               busy ||
               currentOrder.items.length === 0 ||
@@ -2024,6 +2435,7 @@ function GarcomApp() {
             onClose={() => setViewTicket(null)}
           />
         )}
+        {tourOverlay}
       </div>
     );
   }
@@ -2627,17 +3039,20 @@ function ItemRow({
   onQty,
   onRemove,
   onNote,
+  dataTour,
 }: {
   item: OrderItem;
   station: 'kitchen' | 'bar';
   onQty: (delta: number) => void;
   onRemove: () => void;
   onNote: (note: string) => void;
+  /** marcador do tutorial do garçom (só o primeiro item do resumo) */
+  dataTour?: string;
 }) {
   const [editingNote, setEditingNote] = useState(false);
   const [draft, setDraft] = useState(item.note);
   return (
-    <div className="item-row">
+    <div className="item-row" data-tour={dataTour}>
       <div className="top">
         <span className="iname">{item.product_name}</span>
         <span className="iline">{brl(item.price_cents * item.qty)}</span>

@@ -2405,6 +2405,172 @@ section('26 · Apresentação com carrossel de mídia (Parte 1)');
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* 27 · Tutorial do garçom (Parte 4)                                  */
+/* ------------------------------------------------------------------ */
+section('27 · Tutorial do garçom (Parte 4)');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  // Bloco do tutorial dentro do GarcomApp (funções + efeito).
+  const tourBlock = pageSrc.slice(
+    pageSrc.indexOf(
+      '/* ------------------------------ TUTORIAL DO GARÇOM (Parte 4)',
+    ),
+    pageSrc.indexOf('/* ------------------------------ DONO: ACESSO'),
+  );
+  // "Visto" por garçom, no aparelho.
+  has(
+    pageSrc,
+    "TOUR_SEEN_PREFIX = 'tutorial_garcom_visto_v1_'",
+    'visto guardado por login do garçom (localStorage)',
+  );
+  check(
+    'tour tem 7 passos',
+    pageSrc.includes('TOUR_STEP_COUNT = 7'),
+  );
+  // Os 7 passos cobrem o fluxo real do garçom, nesta ordem.
+  const stepIds = [
+    'mesas',
+    'abrir-mesa',
+    'buscar-produto',
+    'como-servir',
+    'resumo',
+    'revisar',
+    'fechar-mesa',
+  ];
+  for (const id of stepIds) {
+    check(
+      `passo "${id}" existe no tour`,
+      pageSrc.includes(`id: '${id}'`),
+    );
+  }
+  // Telas reais de cada passo: mesas (2x), pedir (2x), servir (1x),
+  // resumo (2x).
+  check(
+    'passos usam as telas de verdade (tables/order/serve/summary)',
+    (pageSrc.match(/view: 'tables'/g) || []).length >= 2 &&
+      (pageSrc.match(/view: 'order'/g) || []).length >= 2 &&
+      pageSrc.includes("view: 'serve'") &&
+      (pageSrc.match(/view: 'summary'/g) || []).length >= 2,
+  );
+  // Auto-início no primeiro login do garçom.
+  const loginWaiter = pageSrc.slice(
+    pageSrc.indexOf("if (result.kind === 'waiter')"),
+    pageSrc.indexOf(
+      "if (waiterOnly) throw new Error('Não foi possível entrar. Tente de novo.');",
+    ),
+  );
+  check(
+    'tour abre sozinho no primeiro login do garçom',
+    loginWaiter.includes('startTourIfFirstTime(waiter.login'),
+  );
+  check(
+    'sessão restaurada também abre o tour na primeira vez',
+    pageSrc.includes('startTourIfFirstTime(waiter.login, restored)'),
+  );
+  check(
+    'não abre quando já visto (hasSeenTour)',
+    pageSrc.includes('if (!hasSeenTour(login)) startTour(sess);'),
+  );
+  // Pular + rever.
+  has(pageSrc, 'Pular tutorial', 'botão "Pular tutorial" sempre visível');
+  check(
+    '"Ver tutorial de novo" nos dois menus do garçom (mesas e pedir)',
+    (pageSrc.match(/Ver tutorial de novo/g) || []).length === 2,
+  );
+  // Progresso e selo de demonstração.
+  has(
+    pageSrc,
+    '{tour + 1} de {TOUR_STEP_COUNT}',
+    'progresso "N de 7" no balão',
+  );
+  has(
+    pageSrc,
+    'Tutorial · demonstração',
+    'selo "Tutorial · demonstração" visível no tour',
+  );
+  // SEGURANÇA: o tour não grava nada — nenhuma escrita de pedido no
+  // bloco do tutorial.
+  for (const w of [
+    'store.createOrder',
+    'store.addItem',
+    'store.sendOrder',
+    'store.closeOrder',
+    'store.removeItem',
+    'store.updateItem',
+    'store.nextOrderNumber',
+  ]) {
+    check(`tour não grava pedido (${w} ausente no bloco do tour)`, !tourBlock.includes(w));
+  }
+  check(
+    'pedido de demonstração tem id vazio (rascunho não persistido)',
+    tourBlock.includes("id: '',"),
+  );
+  // Ao terminar ou pular: grava o visto, descarta a demonstração e
+  // cai na grade de Mesas limpa.
+  check(
+    'ao terminar, grava o visto e volta pra grade de Mesas',
+    tourBlock.includes('markTourSeen(session.login)') &&
+      tourBlock.includes("setView('tables')"),
+  );
+  check(
+    'ao terminar, descarta o pedido de demonstração',
+    tourBlock.includes('setCurrentOrder(null)') &&
+      tourBlock.includes('setServeProduct(null)'),
+  );
+  // O balão é renderizado nas 4 telas do garçom que o tour percorre.
+  check(
+    'balão do tour nas telas de mesas, pedir, servir e resumo',
+    (pageSrc.match(/\{tourOverlay\}/g) || []).length === 4,
+  );
+  // Só pro garçom: nada de tour na área do dono nem no /adm.
+  const ownerBlock = pageSrc.slice(
+    pageSrc.indexOf("if (view === 'owner' && ownerSession)"),
+    pageSrc.indexOf("if (view === 'tables')"),
+  );
+  check(
+    'tour não aparece na área do dono',
+    ownerBlock.length > 0 &&
+      !ownerBlock.includes('tourOverlay') &&
+      !ownerBlock.includes('startTour'),
+  );
+  const adminBlock = pageSrc.slice(
+    pageSrc.indexOf("if (view === 'admin' && adminSession)"),
+    pageSrc.indexOf("if (view === 'owner' && ownerSession)"),
+  );
+  check(
+    'tour não aparece no painel do administrador',
+    adminBlock.length > 0 &&
+      !adminBlock.includes('tourOverlay') &&
+      !adminBlock.includes('startTour'),
+  );
+  // Balão não cobre o destacado da barra de baixo: REVISAR e Fechar
+  // mesa usam o balão em cima.
+  check(
+    'balão vai pra cima nos passos da barra de baixo (2x)',
+    (pageSrc.match(/balloon: 'top',/g) || []).length === 2,
+  );
+  // CSS do tour.
+  check('CSS do balão do tour (.tour-balloon)', cssSrc.includes('.tour-balloon'));
+  check(
+    'CSS do balão: largura de celular, sem estourar a tela',
+    cssSrc.includes('.tour-balloon {') &&
+      cssSrc.includes('max-width: 480px;') &&
+      cssSrc.includes('left: 12px;'),
+  );
+  check('CSS do bloqueio de toques (.tour-blocker)', cssSrc.includes('.tour-blocker'));
+  check('CSS do anel de destaque (.tour-highlight)', cssSrc.includes('.tour-highlight'));
+  check(
+    'CSS do balão em cima (.tour-balloon-top)',
+    cssSrc.includes('.tour-balloon-top'),
+  );
+  check(
+    'CSS: destaque sem animação com movimento reduzido',
+    cssSrc.includes('.tour-highlight') &&
+      cssSrc.includes('@media (prefers-reduced-motion: reduce)'),
+  );
+}
+
 console.log(`\n========================================`);
 console.log(`SMOKE: ${pass} passaram, ${fail} falharam`);
 if (fail > 0) {
