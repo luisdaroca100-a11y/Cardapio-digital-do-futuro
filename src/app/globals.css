@@ -1355,6 +1355,244 @@ select {
   pointer-events: none;
 }
 
+/* ---------- apresentação escura (igual à landing da versão de teste) ---------- */
+
+.app.landing {
+  background: #17110c;
+  color: #f5efe9;
+}
+
+.landing .btn-orange {
+  background: #f26a3d;
+}
+
+/* Cabeçalho: nome à esquerda, botão de cadastro à direita */
+.landing-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border-bottom: 1px solid #2e241b;
+}
+
+.landing-header strong {
+  font-size: 17px;
+  color: #f5efe9;
+  line-height: 1.2;
+}
+
+.landing-header-cta {
+  width: auto;
+  flex: 0 0 auto;
+  font-size: 13px;
+  padding: 10px 12px;
+  line-height: 1.25;
+}
+
+/* Hero: título grande em duas cores */
+.landing-hero {
+  padding: 26px 2px 8px;
+}
+
+.landing-hero h1 {
+  margin: 0 0 14px;
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1.15;
+  color: #f5efe9;
+}
+
+.landing-accent {
+  color: #f26a3d;
+}
+
+.landing-hero p {
+  margin: 0 0 18px;
+  font-size: 15px;
+  line-height: 1.55;
+  color: #c9b8a6;
+}
+
+.landing-hero-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+
+.landing-hero-btns .btn {
+  width: 100%;
+}
+
+.landing-outline {
+  background: transparent;
+  color: #f5efe9;
+  border: 2px solid #6b5847;
+}
+
+/* Maquete de celular da tela de Mesas */
+.landing-phone {
+  width: 230px;
+  margin: 0 auto 10px;
+  border: 3px solid #3a2d22;
+  border-radius: 28px;
+  background: #fff;
+  padding: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.landing-phone-screen {
+  background: #fff;
+  border-radius: 18px;
+  overflow: hidden;
+  color: var(--ink);
+}
+
+.landing-phone-head {
+  background: var(--blue);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+  text-align: center;
+  padding: 8px;
+}
+
+.landing-phone-search {
+  margin: 8px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10px;
+  color: var(--muted);
+  padding-bottom: 4px;
+}
+
+.landing-phone-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 0 8px 10px;
+}
+
+.landing-phone-grid span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.lp-green {
+  background: #2e9e44;
+  color: #fff;
+}
+
+.lp-orange {
+  background: var(--orange);
+  color: #fff;
+}
+
+.lp-gray {
+  background: #e0e0e0;
+  color: #555;
+}
+
+/* Seções no mesmo estilo escuro (o conteúdo não muda) */
+.landing .section-title {
+  color: #f26a3d;
+}
+
+.landing .hint {
+  color: #c9b8a6;
+}
+
+.landing .step {
+  background: #241b14;
+  border-color: #3a2d22;
+}
+
+.landing .step strong {
+  color: #f5efe9;
+}
+
+.landing .step span {
+  color: #c9b8a6;
+}
+
+.landing .plan-card {
+  background: #241b14;
+  border-color: #3a2d22;
+}
+
+.landing .plan-card.featured {
+  border-color: #f26a3d;
+}
+
+.landing .plan-card strong {
+  color: #f5efe9;
+}
+
+.landing .plan-price {
+  color: #f26a3d;
+}
+
+.landing .plan-card span:last-child {
+  color: #c9b8a6;
+}
+
+.landing .card {
+  background: #241b14;
+  border-color: #3a2d22;
+  color: #f5efe9;
+}
+
+.landing .calc-card h3 {
+  color: #f5efe9;
+}
+
+.landing .calc-line strong {
+  color: #f26a3d;
+}
+
+.landing .calc-card input {
+  background: #17110c;
+  color: #f5efe9;
+  border-color: #3a2d22;
+}
+
+.landing .calc-card label {
+  color: #c9b8a6;
+}
+
+/* Chamada final no fim da apresentação */
+.landing-final {
+  margin: 26px 0 6px;
+  text-align: center;
+}
+
+.landing-final p {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #f5efe9;
+}
+
+.landing-final .home-cta {
+  margin-bottom: 0;
+}
+
+/* Respiro no fim das vias: o cupom rola por completo acima do botão
+ * flutuante de WhatsApp, sem terminar escondido embaixo dele. */
+.landing .home-tickets {
+  padding-bottom: 64px;
+}
+
+.landing .home-footer .owner-link {
+  color: #a08a76;
+}
+
 /* ---------- QR Code dos garçons ---------- */
 
 .qr-img {

@@ -1299,6 +1299,107 @@ section('19 · Apresentação rica: vias, financeiro e calculadora');
   check('CSS da calculadora (.calc-card)', cssSrc.includes('.calc-card'));
 }
 
+section('20 · Landing escura igual à da versão de teste');
+{
+  const homeSrc = pageSrc.slice(
+    pageSrc.indexOf('function HomeView'),
+    pageSrc.indexOf('/* ------------------- DONO: DASHBOARD'),
+  );
+  // Hero escuro com o título grande em duas cores.
+  check(
+    'landing usa o wrapper escuro (app landing)',
+    homeSrc.includes('className="app landing"'),
+  );
+  check(
+    'título do hero: "O pedido sai da mesa direto pra cozinha."',
+    homeSrc.includes('O pedido sai da mesa direto pra cozinha.'),
+  );
+  check(
+    'título do hero: "E a venda, direto pro seu financeiro."',
+    homeSrc.includes('E a venda, direto pro seu financeiro.'),
+  );
+  check(
+    'segunda frase do título em laranja (landing-accent)',
+    homeSrc.includes('landing-accent'),
+  );
+  check(
+    'subtítulo da landing',
+    homeSrc.includes('Sistema completo para restaurantes:'),
+  );
+  check(
+    'cabeçalho "Sistema de Restaurante" com botão de cadastro',
+    homeSrc.includes('Sistema de Restaurante') &&
+      homeSrc.includes('landing-header'),
+  );
+  check(
+    'botão "Ver como funciona" rola até a seção',
+    homeSrc.includes('Ver como funciona') &&
+      homeSrc.includes("getElementById('como-funciona')"),
+  );
+  check(
+    'seção "Como funciona" tem o id do botão',
+    homeSrc.includes('id="como-funciona"'),
+  );
+  check(
+    'maquete de celular da tela de Mesas no hero',
+    homeSrc.includes('landing-phone') &&
+      homeSrc.includes('landing-phone-grid'),
+  );
+  // A landing sempre abre rolada pro topo.
+  check(
+    'landing rola pro topo ao carregar (scrollTo 0, 0)',
+    homeSrc.includes('window.scrollTo(0, 0)'),
+  );
+  check(
+    'restauração de scroll do navegador desligada na landing',
+    homeSrc.includes("history.scrollRestoration = 'manual'"),
+  );
+  // WhatsApp não cobre o cupom térmico nem os planos.
+  check(
+    'WhatsApp se esconde também nas vias (ticketsRef)',
+    homeSrc.includes('ticketsRef') &&
+      homeSrc.includes('ref={ticketsRef}'),
+  );
+  check(
+    'esconder o WhatsApp olha vias E planos',
+    homeSrc.includes('inBand(plansRef.current)') &&
+      homeSrc.includes('inBand(ticketsRef.current)'),
+  );
+  // Botão de cadastro no fim da apresentação (depois da última seção).
+  check(
+    'três botões "Cadastrar meu restaurante": cabeçalho, hero e fim',
+    (homeSrc.match(/onClick={onRegister}/g) || []).length === 3,
+  );
+  check(
+    'botão final fica depois das Dúvidas frequentes (fim da página)',
+    homeSrc.indexOf('Dúvidas frequentes') <
+      homeSrc.lastIndexOf('Cadastrar meu restaurante'),
+  );
+  check(
+    'chamada final com os 3 dias grátis antes do botão do fim',
+    homeSrc.includes('landing-final') &&
+      homeSrc.includes('Pronto pra começar?'),
+  );
+  check('CSS da chamada final (.landing-final)', cssSrc.includes('.landing-final'));
+  // Fluxo preservado: só o botão de cadastro; entrar é link discreto.
+  check(
+    'link discreto "Já tem uma conta? Entrar" no rodapé',
+    homeSrc.includes('Já tem uma conta? Entrar'),
+  );
+  // CSS escuro.
+  check('CSS: fundo escuro #17110c', cssSrc.includes('#17110c'));
+  check('CSS: laranja #f26a3d', cssSrc.includes('#f26a3d'));
+  check('CSS do hero escuro (.landing-hero)', cssSrc.includes('.landing-hero'));
+  check(
+    'CSS: respiro no fim das vias (.landing .home-tickets)',
+    cssSrc.includes('.landing .home-tickets'),
+  );
+  check(
+    'CSS do botão outline "Ver como funciona" (.landing-outline)',
+    cssSrc.includes('.landing-outline'),
+  );
+}
+
 section('14 · Build + HTTP');
 {
   const run = (cmd, args) =>

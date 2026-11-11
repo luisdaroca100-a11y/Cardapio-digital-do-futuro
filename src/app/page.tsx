@@ -3175,12 +3175,23 @@ function HomeView({
   onLogin: () => void;
   onRegister: () => void;
 }) {
+  // A landing é escura, igual à da versão de teste: fundo #17110c,
+  // título grande em duas cores e CTA laranja-avermelhado #f26a3d.
+  // A landing sempre abre rolada pro topo — o Chrome restaurava a
+  // rolagem e a página abria no meio, com o topo cortado.
+  useEffect(() => {
+    if ('scrollRestoration' in history) {
+      history.scrollRestoration = 'manual';
+    }
+    window.scrollTo(0, 0);
+  }, []);
   // O botão flutuante de WhatsApp fica fixo no canto inferior direito
-  // e cobria o preço do plano Anual quando a grade de planos passava
-  // por baixo dele. Enquanto a grade estiver na faixa do botão
-  // (~76px do fim da tela), o botão se esconde — o preço dos dois
-  // planos fica sempre legível ao rolar.
+  // e cobria conteúdo ao rolar (antes o preço do plano Anual, depois
+  // o nome do garçom no cupom térmico). Enquanto a grade de planos
+  // ou as vias estiverem na faixa do botão (~76px do fim da tela),
+  // o botão se esconde — nada fica coberto ao rolar.
   const plansRef = useRef<HTMLDivElement | null>(null);
+  const ticketsRef = useRef<HTMLDivElement | null>(null);
   const [hideWa, setHideWa] = useState(false);
   // Calculadora de comissão — exemplo do Luis: R$ 200,00 a 8% =
   // R$ 16,00 do garçom, R$ 184,00 pro restaurante.
@@ -3199,13 +3210,13 @@ function HomeView({
   );
   const calcRestauranteCents = calcVendaCents - calcComissaoCents;
   useEffect(() => {
-    const update = () => {
-      const el = plansRef.current;
-      if (!el) return;
+    const inBand = (el: HTMLDivElement | null) => {
+      if (!el) return false;
       const r = el.getBoundingClientRect();
-      setHideWa(
-        r.bottom > window.innerHeight - 76 && r.top < window.innerHeight,
-      );
+      return r.bottom > window.innerHeight - 76 && r.top < window.innerHeight;
+    };
+    const update = () => {
+      setHideWa(inBand(plansRef.current) || inBand(ticketsRef.current));
     };
     update();
     window.addEventListener('scroll', update, { passive: true });
@@ -3216,20 +3227,69 @@ function HomeView({
     };
   }, []);
   return (
-    <div className="app">
-      <div className="hero">
-        <h1>Sistema do Garçom</h1>
-        <p>Pedidos, mesas e financeiro num só lugar.</p>
-      </div>
-      <div className="content home">
+    <div className="app landing">
+      <div className="landing-header">
+        <strong>Sistema de Restaurante</strong>
         <button
-          className="btn btn-orange home-cta"
+          className="btn btn-orange landing-header-cta"
           onClick={onRegister}
         >
           Cadastrar meu restaurante
         </button>
+      </div>
+      <div className="content home landing-content">
+        <div className="landing-hero">
+          <h1>
+            O pedido sai da mesa direto pra cozinha.{' '}
+            <span className="landing-accent">
+              E a venda, direto pro seu financeiro.
+            </span>
+          </h1>
+          <p>
+            Sistema completo para restaurantes: o garçom anota o pedido no
+            celular, cada setor recebe só a sua via — prato na cozinha,
+            bebida no bar, conta no balcão — e você, dono, acompanha vendas
+            e comissões sem digitar nada duas vezes.
+          </p>
+          <div className="landing-hero-btns">
+            <button
+              className="btn btn-orange"
+              onClick={onRegister}
+            >
+              Cadastrar meu restaurante
+            </button>
+            <button
+              className="btn landing-outline"
+              onClick={() =>
+                document
+                  .getElementById('como-funciona')
+                  ?.scrollIntoView({ behavior: 'smooth' })
+              }
+            >
+              Ver como funciona
+            </button>
+          </div>
+          <div className="landing-phone" aria-hidden>
+            <div className="landing-phone-screen">
+              <div className="landing-phone-head">Mesas</div>
+              <div className="landing-phone-search">
+                Digite o nº da mesa...
+              </div>
+              <div className="landing-phone-grid">
+                <span className="lp-green">01</span>
+                <span className="lp-green">02</span>
+                <span className="lp-orange">03 🔒</span>
+                <span className="lp-gray">ABRIR 04</span>
+                <span className="lp-gray">ABRIR 05</span>
+                <span className="lp-green">06</span>
+              </div>
+            </div>
+          </div>
+        </div>
 
-        <div className="section-title">Como funciona</div>
+        <div className="section-title" id="como-funciona">
+          Como funciona
+        </div>
         <div className="steps">
           <div className="step">
             <strong>1 · O garçom anota o pedido no celular</strong>
@@ -3268,7 +3328,7 @@ function HomeView({
           O pedido sai impresso na hora, cada um no seu lugar. Na cozinha
           e no bar, a via sai sem valores — só o pedido e a mesa.
         </p>
-        <div className="home-tickets">
+        <div className="home-tickets" ref={ticketsRef}>
           <div className="ticket">
             <div className="t-head">
               <span className="t-logo" aria-hidden>
@@ -3484,12 +3544,18 @@ function HomeView({
           </p>
         </div>
 
-        <button
-          className="btn btn-orange home-cta"
-          onClick={onRegister}
-        >
-          Cadastrar meu restaurante
-        </button>
+        <div className="landing-final">
+          <p>
+            Pronto pra começar? Cadastre seu restaurante e use 3 dias
+            grátis.
+          </p>
+          <button
+            className="btn btn-orange home-cta"
+            onClick={onRegister}
+          >
+            Cadastrar meu restaurante
+          </button>
+        </div>
 
         <div className="home-footer">
           <button className="owner-link" onClick={onLogin}>
