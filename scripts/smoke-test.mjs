@@ -26,6 +26,7 @@ globalThis.window = {
 
 const store = await import(new URL('../src/lib/store.ts', import.meta.url));
 const pageSrc = readFileSync(path.join(ROOT, 'src/app/page.tsx'), 'utf8');
+const admSrc = readFileSync(path.join(ROOT, 'src/app/adm/page.tsx'), 'utf8');
 const storeSrc = readFileSync(path.join(ROOT, 'src/lib/store.ts'), 'utf8');
 const sqlSrc = readFileSync(path.join(ROOT, 'supabase.sql'), 'utf8');
 const cssSrc = readFileSync(path.join(ROOT, 'src/app/globals.css'), 'utf8');
@@ -890,13 +891,16 @@ section('13 · Fonte: admin e multi-restaurante');
 {
   const has = (src, s, name) => check(name, src.includes(s));
   const notHas = (src, s, name) => check(name, !src.includes(s));
-  has(pageSrc, 'Área do administrador', 'login tem link "Área do administrador"');
   has(pageSrc, 'AdminAuthView', 'componente de acesso do admin');
   has(pageSrc, 'PlatformAdminView', 'componente da lista do admin');
   has(pageSrc, 'handleAdminLogin', 'login do admin');
   has(pageSrc, 'handleAdminCreate', 'primeiro acesso do admin');
   has(pageSrc, 'PLATFORM_ADMIN_SESSION_KEY', 'sessão do admin separada');
   has(pageSrc, "view === 'admin' && adminSession", 'área do admin só abre com sessão de admin');
+  has(pageSrc, 'isAdminPath', 'entrada escondida /adm detectada no boot');
+  has(pageSrc, "p === '/adm'", 'caminho /adm reconhecido');
+  has(admSrc, "import Page from '../page'", 'rota /adm renderiza o mesmo app');
+  has(admSrc, 'export default function AdminPage', 'rota /adm existe');
   has(pageSrc, 'Restaurantes cadastrados na plataforma', 'lista do admin: título');
   has(pageSrc, 'garçons', 'lista do admin: nº de garçons');
   has(pageSrc, 'Cadastrado em', 'lista do admin: data do cadastro');
@@ -925,12 +929,19 @@ section('13 · Fonte: admin e multi-restaurante');
   check('lista do admin mostra a data', adminSrc.includes('Cadastrado em'));
   check('lista do admin mostra os garçons', adminSrc.includes('s.waiterCount'));
 
-  // O link do admin só existe na tela de login: nem o garçom (mesas)
-  // nem o dono (área dele) veem o link.
+  // A área do admin NÃO tem entrada visível: o link saiu da tela de
+  // login — só quem conhece o endereço /adm chega lá.
   const loginStart = pageSrc.indexOf("if (view === 'login')");
   const loginEnd = pageSrc.indexOf("if (view === 'admin' && adminSession)");
   const loginSrc = pageSrc.slice(loginStart, loginEnd);
-  check('link do admin está na tela de login', loginSrc.includes('Área do administrador'));
+  check(
+    'sem link visível do admin na tela de login',
+    !loginSrc.includes('Área do administrador'),
+  );
+  check(
+    'sem botão de admin na tela de login',
+    !loginSrc.includes('admin-link'),
+  );
   const tablesStart = pageSrc.indexOf("if (view === 'tables')");
   const tablesEnd = pageSrc.indexOf('/* ------------------------------ PEDIR ------------------------------ */');
   check(
@@ -1075,7 +1086,7 @@ section('16 · Apresentação (primeira tela)');
   check(
     'botão "Cadastrar meu restaurante" abre o cadastro in-app',
     homeSrc.includes('Cadastrar meu restaurante') &&
-      homeSrc.includes('onClick={onRegister}'),
+      homeSrc.includes('onClick={() => onRegister('),
   );
   check(
     'sem botão grande "Entrar" na apresentação — só o link discreto no rodapé',
@@ -1088,7 +1099,8 @@ section('16 · Apresentação (primeira tela)');
   );
   check(
     'cadastro abre dentro do sistema (sem abrir outro site)',
-    pageSrc.includes("onRegister={() => setView('register')}"),
+    pageSrc.includes('onRegister={(plan) => {') &&
+      pageSrc.includes("setView('register')"),
   );
   check('CSS dos planos (.plan-card)', cssSrc.includes('.plan-card'));
   check(
@@ -1385,9 +1397,10 @@ section('20 · Landing escura igual à da versão de teste');
       homeSrc.includes('inBand(ticketsRef.current)'),
   );
   // Botões de cadastro na apresentação: cabeçalho, hero, 2 planos e fim.
+  // Os dos planos levam o plano escolhido; os genéricos vão sem plano.
   check(
     'cinco botões "Cadastrar meu restaurante": cabeçalho, hero, planos e fim',
-    (homeSrc.match(/onClick={onRegister}/g) || []).length === 5,
+    (homeSrc.match(/onClick=\{\(\) => onRegister\(/g) || []).length === 5,
   );
   check(
     'botão final fica depois das Dúvidas frequentes (fim da página)',
@@ -1769,7 +1782,12 @@ section('22 · Sem tela de primeiro acesso');
     pageSrc.indexOf('/** Login único do formulário principal'),
   );
   has(bootSrc, "setView('owner')", 'boot do dono vai pro painel');
-  notHas(bootSrc, "'setup'", 'boot do dono sem setup');
+  // O 'setup' que resta no boot é o modo do acesso do admin (/adm),
+  // não a tela de primeiro acesso: a restauração do dono não tem setup.
+  const ownerBootSrc = bootSrc.slice(
+    bootSrc.indexOf('// Sessão do dono (área financeira)'),
+  );
+  notHas(ownerBootSrc, "'setup'", 'boot do dono sem setup');
 
   // Abas do painel funcionam com 0 itens (botão + estado vazio).
   has(pageSrc, 'Novo garçom', 'aba Garçons tem "Novo garçom"');
@@ -1895,7 +1913,7 @@ section('23 · QR Code dos garçons');
   );
   has(
     pageSrc,
-    "isWaiterOnlyParam() ? 'login' : 'home'",
+    "isWaiterOnlyParam() || isAdminPath() ? 'login' : 'home'",
     'QR abre direto no login',
   );
   has(
@@ -1920,7 +1938,7 @@ section('23 · QR Code dos garçons');
   check(
     'boot no QR não consulta o administrador antes de decidir a tela',
     bootSrc.indexOf('if (!onlyWaiter)') <
-      bootSrc.indexOf('setHasAdmin((await store.getPlatformAdmin())'),
+      bootSrc.indexOf('getPlatformAdmin()'),
   );
   has(
     bootSrc,
@@ -1931,6 +1949,284 @@ section('23 · QR Code dos garçons');
     bootSrc,
     "setView(onlyWaiter ? 'login' : 'home')",
     'boot sem sessão no QR cai no login do garçom',
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 24 · Planos: cadastro com plano + painel do admin com plano e trial */
+/* ------------------------------------------------------------------ */
+section('24 · Planos e painel do administrador');
+{
+  const hash = await store.hashPassword('senha-plano-123');
+
+  // Cadastro com plano Mensal grava o plano certo.
+  const mensal = await store.registerRestaurant({
+    restaurantName: 'Restaurante Mensal',
+    ownerName: 'Marta',
+    login: 'dona-marta',
+    passwordHash: hash,
+    plan: 'monthly',
+  });
+  check(
+    'cadastro com plano Mensal grava monthly',
+    mensal.restaurant.plan === 'monthly',
+  );
+  check(
+    'cadastro Mensal volta na lista com o plano',
+    (await store.listRestaurants()).find(
+      (r) => r.id === mensal.restaurant.id,
+    )?.plan === 'monthly',
+  );
+
+  // Cadastro com plano Anual grava o plano certo.
+  const anual = await store.registerRestaurant({
+    restaurantName: 'Restaurante Anual',
+    ownerName: 'Ana',
+    login: 'dona-ana',
+    passwordHash: hash,
+    plan: 'annual',
+  });
+  check(
+    'cadastro com plano Anual grava annual',
+    anual.restaurant.plan === 'annual',
+  );
+
+  // Cadastro genérico (sem plano) fica sem plano definido — período grátis.
+  const semPlano = await store.registerRestaurant({
+    restaurantName: 'Restaurante Sem Plano',
+    ownerName: 'Sofia',
+    login: 'dona-sofia',
+    passwordHash: hash,
+  });
+  check(
+    'cadastro sem plano fica sem plano definido',
+    semPlano.restaurant.plan === null ||
+      semPlano.restaurant.plan === undefined,
+  );
+
+  // Rótulos dos planos.
+  check(
+    'rótulo Mensal com preço',
+    store.planLabel('monthly') === 'Mensal — R$ 69,99/mês',
+  );
+  check(
+    'rótulo Anual com preço',
+    store.planLabel('annual') === 'Anual — R$ 499,99/ano',
+  );
+  check(
+    'rótulo sem plano',
+    store.planLabel(undefined) === 'Sem plano escolhido',
+  );
+  check('período grátis dura 3 dias', store.TRIAL_DAYS === 3);
+
+  // Status do trial: contado da data de cadastro.
+  const DAY = 24 * 60 * 60 * 1000;
+  const agora = new Date();
+  check(
+    'trial de quem acabou de cadastrar: em trial, restam 3 dias',
+    (() => {
+      const t = store.trialStatus(agora.toISOString(), agora);
+      return t.inTrial === true && t.daysLeft === 3;
+    })(),
+  );
+  check(
+    'trial de quem cadastrou há 2 dias: em trial, resta 1 dia',
+    (() => {
+      const t = store.trialStatus(
+        new Date(agora.getTime() - 2 * DAY).toISOString(),
+        agora,
+      );
+      return t.inTrial === true && t.daysLeft === 1;
+    })(),
+  );
+  check(
+    'trial de quem cadastrou há 4 dias: encerrado, 0 dias',
+    (() => {
+      const t = store.trialStatus(
+        new Date(agora.getTime() - 4 * DAY).toISOString(),
+        agora,
+      );
+      return t.inTrial === false && t.daysLeft === 0;
+    })(),
+  );
+  check(
+    'fim do trial é 3 dias após o cadastro',
+    store.trialEndDate(agora.toISOString()).getTime() ===
+      agora.getTime() + 3 * DAY,
+  );
+
+  // Painel do admin: plano + trial por restaurante; restaurante antigo
+  // sem plano (Gosto Caseiro) aparece como trial, contado do cadastro.
+  const summaries = await store.listRestaurantSummaries();
+  const m = summaries.find(
+    (s) => s.restaurant.name === 'Restaurante Mensal',
+  );
+  const a = summaries.find((s) => s.restaurant.name === 'Restaurante Anual');
+  const sp = summaries.find(
+    (s) => s.restaurant.name === 'Restaurante Sem Plano',
+  );
+  const gc = summaries.find((s) => s.restaurant.name === 'Gosto Caseiro');
+  check('admin: Mensal com plano monthly', m?.restaurant.plan === 'monthly');
+  check('admin: Anual com plano annual', a?.restaurant.plan === 'annual');
+  check(
+    'admin: Sem Plano sem plano definido',
+    sp?.restaurant.plan === null || sp?.restaurant.plan === undefined,
+  );
+  check(
+    'admin: Gosto Caseiro (antigo, sem plano) aparece como trial',
+    gc !== undefined &&
+      (gc.restaurant.plan === null || gc.restaurant.plan === undefined) &&
+      store.trialStatus(gc.restaurant.created_at).inTrial === true,
+  );
+  check(
+    'admin: resumo continua sem nenhum campo financeiro',
+    gc !== undefined &&
+      JSON.stringify(Object.keys(gc).sort()) ===
+        JSON.stringify(['ownerName', 'restaurant', 'waiterCount']),
+  );
+
+  // Checagens estáticas do fluxo do plano.
+  const has = (src, s, name) => check(name, src.includes(s));
+  has(
+    pageSrc,
+    "onClick={() => onRegister('monthly')}",
+    'cartão Mensal passa o plano pro cadastro',
+  );
+  has(
+    pageSrc,
+    "onClick={() => onRegister('annual')}",
+    'cartão Anual passa o plano pro cadastro',
+  );
+  has(
+    pageSrc,
+    'onClick={() => onRegister()}',
+    'botões genéricos (cabeçalho/hero/fim) vão sem plano',
+  );
+  has(pageSrc, 'plan={registerPlan}', 'cadastro recebe o plano escolhido');
+  has(
+    pageSrc,
+    'onRegister(restaurantName, name, login, password, plan ?? null)',
+    'formulário de cadastro repassa o plano',
+  );
+  has(
+    pageSrc,
+    'Plano escolhido: ${store.planLabel(plan)}',
+    'formulário mostra o plano escolhido',
+  );
+  has(
+    pageSrc,
+    'store.planLabel(registeredPlan)',
+    'tela de sucesso mostra o plano',
+  );
+  has(
+    pageSrc,
+    'store.planLabel(s.restaurant.plan)',
+    'painel do admin mostra o plano',
+  );
+  has(
+    pageSrc,
+    'store.trialStatus(s.restaurant.created_at)',
+    'painel do admin mostra o status do trial',
+  );
+  has(pageSrc, 'Período', 'painel do admin mostra o período grátis');
+  has(storeSrc, 'TRIAL_DAYS', 'store: duração do período grátis');
+  has(storeSrc, 'planLabel', 'store: rótulo do plano');
+  has(storeSrc, 'trialStatus', 'store: status do trial');
+  has(storeSrc, 'trialEndDate', 'store: fim do trial');
+  has(storeSrc, 'plan?: PlanId | null', 'store: cadastro aceita o plano');
+  has(storeSrc, 'plan: restaurant.plan ?? null', 'store: plano gravado');
+  has(
+    sqlSrc,
+    "plan text check (plan in ('monthly', 'annual'))",
+    'SQL: coluna plan em restaurants',
+  );
+  has(
+    sqlSrc,
+    'add column if not exists plan',
+    'SQL: migração da coluna plan p/ bancos antigos',
+  );
+
+  // O painel do admin continua sem financeiro: plano e trial são
+  // cadastro, não venda — nenhum valor de venda ou comissão aparece.
+  const adminStart = pageSrc.indexOf('function PlatformAdminView');
+  const adminEnd = pageSrc.indexOf('type OwnerTab');
+  const adminSrc = pageSrc.slice(adminStart, adminEnd);
+  for (const s of ['total_cents', 'Total vendido', 'Comissão', 'commission', 'brl(']) {
+    check('painel do admin não mostra "' + s + '"', !adminSrc.includes(s));
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 25 · Entrada escondida do administrador: /adm                        */
+/* ------------------------------------------------------------------ */
+section('25 · Administrador escondido em /adm');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  const notHas = (src, s, name) => check(name, !src.includes(s));
+
+  // A rota existe e renderiza o mesmo app da página principal.
+  has(admSrc, "import Page from '../page'", 'rota /adm usa o mesmo app');
+  has(admSrc, 'export default function AdminPage', 'rota /adm exportada');
+  has(admSrc, '/adm', 'rota /adm documentada no arquivo');
+
+  // O boot detecta o caminho e abre o login do admin.
+  has(pageSrc, 'function isAdminPath()', 'detecção do caminho /adm');
+  has(pageSrc, "p === '/adm'", 'caminho /adm reconhecido');
+  has(
+    pageSrc,
+    'isWaiterOnlyParam() || isAdminPath()',
+    'estado inicial no /adm já é o login',
+  );
+  has(
+    pageSrc,
+    "setAdminAuth(adminExists ? 'login' : 'setup')",
+    'boot no /adm abre login (ou primeiro acesso se não há admin)',
+  );
+  has(
+    pageSrc,
+    'if (isAdminPath()) {',
+    'boot no /adm desvia pro login do admin',
+  );
+
+  // No /adm, o boot NÃO restaura sessão de dono nem de garçom: o
+  // desvio do /adm vem antes da restauração do dono e retorna antes
+  // da restauração do garçom.
+  const bootSrc = pageSrc.slice(
+    pageSrc.indexOf('useEffect(() => {'),
+    pageSrc.indexOf('/** Login único do formulário principal'),
+  );
+  check(
+    'desvio do /adm vem antes da restauração do dono',
+    bootSrc.indexOf('if (isAdminPath())') <
+      bootSrc.indexOf('// Sessão do dono (área financeira)'),
+  );
+  check(
+    'desvio do /adm vem antes da restauração do garçom',
+    bootSrc.indexOf('if (isAdminPath())') <
+      bootSrc.indexOf('const raw = safeGet(SESSION_KEY)'),
+  );
+
+  // Sair no /adm volta pro login do admin, não pra apresentação.
+  has(
+    pageSrc,
+    'if (isAdminPath()) {\n      setAdminAuth(hasAdmin ? \'login\' : \'setup\');',
+    'logout no /adm volta pro login do admin',
+  );
+
+  // O login do admin no /adm não tem "Voltar ao login do garçom".
+  has(pageSrc, 'hideCancel={isAdminPath()}', 'cancelar escondido no /adm');
+  has(pageSrc, 'hideCancel?: boolean', 'AdminAuthView aceita esconder o voltar');
+
+  // Nenhuma entrada visível pro painel em lugar nenhum do site.
+  notHas(pageSrc, 'admin-link', 'sem botão de admin em lugar nenhum');
+  const homeSrc = pageSrc.slice(
+    pageSrc.indexOf('function HomeView'),
+    pageSrc.indexOf('/* ------------------- DONO: DASHBOARD'),
+  );
+  check(
+    'apresentação não tem entrada do admin',
+    !homeSrc.includes('Área do administrador') &&
+      !homeSrc.includes('admin'),
   );
 }
 

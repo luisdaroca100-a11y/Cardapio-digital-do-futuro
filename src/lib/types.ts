@@ -1,11 +1,20 @@
 export type PrintsIn = 'kitchen' | 'bar';
 
+/** Plano da plataforma escolhido no cadastro. Os dois planos começam
+ * com 3 dias grátis; sem plano escolhido o restaurante fica no
+ * período grátis até o dono escolher o plano. */
+export type PlanId = 'monthly' | 'annual';
+
 /** Restaurante da plataforma multi-restaurante. Cada restaurante tem
  * seu dono, seus garçons, seu cardápio, seus pedidos e suas vendas —
  * ninguém vê dados de outro restaurante. */
 export interface Restaurant {
   id: string;
   name: string;
+  /** plano escolhido no cadastro ('monthly' | 'annual'); ausente =
+   * restaurante cadastrado antes dos planos, ou cadastro sem plano
+   * escolhido — fica no período grátis de 3 dias. */
+  plan?: PlanId | null;
   created_at: string;
 }
 

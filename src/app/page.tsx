@@ -20,6 +20,7 @@ import type {
   OrderItem,
   OrderWithItems,
   Owner,
+  PlanId,
   Product,
   Restaurant,
   Settings,
@@ -77,6 +78,19 @@ function formatDateTime(iso: string): string {
       month: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
+    });
+  } catch {
+    return '';
+  }
+}
+
+/** Data curta dd/mm/aaaa — usada no prazo do período grátis do admin. */
+function formatDate(d: string | Date): string {
+  try {
+    return new Date(d).toLocaleDateString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
     });
   } catch {
     return '';
@@ -196,10 +210,20 @@ function isWaiterOnlyParam(): boolean {
   return q.get('acesso') === 'garcom' || q.get('tela') === 'garcom';
 }
 
+/** true quando o endereço é a entrada escondida do administrador:
+/adm. Não há link visível pra cá em lugar nenhum do site — só quem
+conhece o endereço chega. Abre o login do administrador (primeiro
+acesso cria o login dele); com sessão válida, abre o painel direto. */
+function isAdminPath(): boolean {
+  if (typeof window === 'undefined') return false;
+  const p = window.location.pathname.replace(/\/+$/, '');
+  return p === '/adm';
+}
+
 function GarcomApp() {
   const [waiterOnly, setWaiterOnly] = useState(() => isWaiterOnlyParam());
   const [view, setView] = useState<View>(() =>
-    isWaiterOnlyParam() ? 'login' : 'home',
+    isWaiterOnlyParam() || isAdminPath() ? 'login' : 'home',
   );
   const [booting, setBooting] = useState(true);
   const [settings, setSettings] = useState<Settings>({
@@ -261,6 +285,13 @@ function GarcomApp() {
   /** nome do restaurante recém-cadastrado (tela de sucesso) */
   const [registeredRestaurantName, setRegisteredRestaurantName] =
     useState('');
+  /** plano escolhido no cadastro (tela de sucesso) — null = cadastro
+   * genérico, sem plano escolhido (período grátis) */
+  const [registeredPlan, setRegisteredPlan] = useState<PlanId | null>(null);
+  /** plano escolhido no cartão da apresentação, levado pro
+   * formulário de cadastro — null = botão genérico (cabeçalho, hero
+   * ou fim da página), sem plano escolhido */
+  const [registerPlan, setRegisterPlan] = useState<PlanId | null>(null);
   const [waiters, setWaiters] = useState<Waiter[]>([]);
   /** contas fechadas p/ o financeiro do dono */
   const [ownerBills, setOwnerBills] = useState<ClosedBill[]>([]);
@@ -321,7 +352,8 @@ function GarcomApp() {
         if (!onlyWaiter) {
           // A consulta do administrador só roda fora do QR: no endereço
           // do QR, o login do garçom não depende de nada do banco.
-          setHasAdmin((await store.getPlatformAdmin()) !== null);
+          const adminExists = (await store.getPlatformAdmin()) !== null;
+          setHasAdmin(adminExists);
           // Sessão do administrador da plataforma tem prioridade: ele não
           // é garçom nem dono de nenhum restaurante.
           const rawAdmin = safeGet(PLATFORM_ADMIN_SESSION_KEY);
@@ -341,6 +373,14 @@ function GarcomApp() {
             } catch {
               /* sessão inválida: vai pro login */
             }
+          }
+          // Entrada escondida /adm: sem sessão de admin, abre o login
+          // do administrador (primeiro acesso cria o login dele).
+          // Não restaura sessão de dono nem de garçom nesse endereço.
+          if (isAdminPath()) {
+            setAdminAuth(adminExists ? 'login' : 'setup');
+            setView('login');
+            return;
           }
           // Sessão do dono (área financeira) tem prioridade sobre a do garçom.
           const rawOwner = safeGet(OWNER_SESSION_KEY);
@@ -529,12 +569,14 @@ function GarcomApp() {
   /** Cadastro sozinho: cria o restaurante + o dono. NÃO entra direto —
    * mostra a tela "Cadastro realizado com sucesso" e, embaixo, o link
    * para a tela de login do dono (com o login já preenchido). O dono
-   * só entra na área dele depois de digitar a senha. */
+   * só entra na área dele depois de digitar a senha. O plano escolhido
+   * no cartão da apresentação é gravado no restaurante. */
   async function handleRestaurantRegister(
     restaurantName: string,
     name: string,
     login: string,
     password: string,
+    plan: PlanId | null,
   ) {
     setError('');
     setBusy(true);
@@ -545,9 +587,11 @@ function GarcomApp() {
         ownerName: name.trim(),
         login: login.trim(),
         passwordHash: hash,
+        plan: plan ?? null,
       });
       setRegisteredLogin(owner.login);
       setRegisteredRestaurantName(restaurant.name);
+      setRegisteredPlan(restaurant.plan ?? null);
       setView('register-success');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível cadastrar.');
@@ -602,8 +646,15 @@ function GarcomApp() {
 
   function handleAdminLogout() {
     setAdminSession(null);
-    setAdminAuth(null);
     safeRemove(PLATFORM_ADMIN_SESSION_KEY);
+    // No endereço escondido /adm, sair volta pro login do
+    // administrador (não pra apresentação).
+    if (isAdminPath()) {
+      setAdminAuth(hasAdmin ? 'login' : 'setup');
+      setView('login');
+      return;
+    }
+    setAdminAuth(null);
     setView(waiterOnly ? 'login' : 'home');
   }
 
@@ -1087,7 +1138,12 @@ function GarcomApp() {
     return (
       <HomeView
         onLogin={() => setView('login')}
-        onRegister={() => setView('register')}
+        onRegister={(plan) => {
+          // O botão do cartão do plano leva o plano escolhido pro
+          // cadastro; os outros botões vão sem plano (período grátis).
+          setRegisterPlan(plan ?? null);
+          setView('register');
+        }}
       />
     );
   }
@@ -1103,6 +1159,7 @@ function GarcomApp() {
           {error && <div className="error">{error}</div>}
           <RegisterRestaurantView
             busy={busy}
+            plan={registerPlan}
             onRegister={handleRestaurantRegister}
             onCancel={() => setView('login')}
           />
@@ -1130,6 +1187,9 @@ function GarcomApp() {
             <p className="hint">
               O restaurante <strong>{registeredRestaurantName}</strong> foi
               criado com o login <strong>{registeredLogin}</strong>.
+              {registeredPlan
+                ? ` Plano: ${store.planLabel(registeredPlan)} — você usa 3 dias grátis.`
+                : ' Você usa 3 dias grátis — depois, escolha o plano Mensal ou Anual.'}
             </p>
             <button
               className="btn btn-purple"
@@ -1178,6 +1238,7 @@ function GarcomApp() {
                 onLogin={handleAdminLogin}
                 onCreate={handleAdminCreate}
                 onCancel={() => setAdminAuth(null)}
+                hideCancel={isAdminPath()}
               />
             </div>
           </>
@@ -1202,8 +1263,9 @@ function GarcomApp() {
                 área financeira dele.
               </p>
               {/* Na tela do QR (?acesso=garcom ou ?tela=garcom) só
-                  aparece o login do garçom — sem "Sou o dono", sem
-                  cadastro e sem a área do administrador. */}
+                  aparece o login do garçom — sem "Sou o dono" e sem
+                  cadastro. A área do administrador não tem entrada
+                  visível: só quem conhece o endereço /adm chega lá. */}
               {!waiterOnly && (
                 <>
                   <button
@@ -1217,14 +1279,6 @@ function GarcomApp() {
                     onClick={() => setView('register')}
                   >
                     Cadastrar meu restaurante
-                  </button>
-                  <button
-                    className="owner-link admin-link"
-                    onClick={() =>
-                      setAdminAuth(hasAdmin ? 'login' : 'setup')
-                    }
-                  >
-                    Área do administrador
                   </button>
                 </>
               )}
@@ -3148,15 +3202,20 @@ function OwnerAuthView({
 
 function RegisterRestaurantView({
   busy,
+  plan,
   onRegister,
   onCancel,
 }: {
   busy: boolean;
+  /** plano escolhido no cartão da apresentação (null = cadastro
+   * genérico, sem plano — fica no período grátis) */
+  plan?: PlanId | null;
   onRegister: (
     restaurantName: string,
     name: string,
     login: string,
     password: string,
+    plan: PlanId | null,
   ) => void;
   onCancel: () => void;
 }) {
@@ -3175,7 +3234,7 @@ function RegisterRestaurantView({
       setError('A senha precisa ter no mínimo 4 caracteres.');
       return;
     }
-    onRegister(restaurantName, name, login, password);
+    onRegister(restaurantName, name, login, password, plan ?? null);
   }
 
   return (
@@ -3183,7 +3242,9 @@ function RegisterRestaurantView({
       <div className="eyebrow">NOVO RESTAURANTE</div>
       <h2>Cadastrar meu restaurante</h2>
       <p className="hint">
-        Por enquanto o acesso é liberado no cadastro, sem pagamento.
+        {plan
+          ? `Plano escolhido: ${store.planLabel(plan)}. Você usa 3 dias grátis.`
+          : 'Você usa 3 dias grátis. Depois, escolha o plano Mensal (R$ 69,99/mês) ou Anual (R$ 499,99/ano).'}
       </p>
       {error && <div className="error">{error}</div>}
       <div className="field">
@@ -3254,12 +3315,16 @@ function AdminAuthView({
   onLogin,
   onCreate,
   onCancel,
+  hideCancel,
 }: {
   mode: 'login' | 'setup';
   busy: boolean;
   onLogin: (login: string, password: string) => void;
   onCreate: (login: string, password: string) => void;
   onCancel: () => void;
+  /** no endereço escondido /adm não há pra onde voltar — o login do
+   * admin é a única tela dali */
+  hideCancel?: boolean;
 }) {
   const [login, setLogin] = useState('');
   const [password, setPassword] = useState('');
@@ -3314,17 +3379,22 @@ function AdminAuthView({
       <button className="btn btn-purple" disabled={busy} onClick={submit}>
         {mode === 'setup' ? 'Criar acesso do administrador' : 'Entrar'}
       </button>
-      <div style={{ height: 10 }} />
-      <button className="btn btn-ghost" onClick={onCancel}>
-        Voltar ao login do garçom
-      </button>
+      {!hideCancel && (
+        <>
+          <div style={{ height: 10 }} />
+          <button className="btn btn-ghost" onClick={onCancel}>
+            Voltar ao login do garçom
+          </button>
+        </>
+      )}
     </div>
   );
 }
 
 /**
  * Lista de restaurantes cadastrados — SÓ cadastro: nome do restaurante,
- * nome do dono, data do cadastro e número de garçons. NENHUM dado
+ * nome do dono, data do cadastro, número de garçons, plano escolhido e
+ * status do período grátis (3 dias a partir do cadastro). NENHUM dado
  * financeiro: o administrador não vê vendas, valores nem comissões.
  */
 function PlatformAdminView({ onLogout }: { onLogout: () => void }) {
@@ -3374,22 +3444,36 @@ function PlatformAdminView({ onLogout }: { onLogout: () => void }) {
             <div className="section-title">
               Restaurantes ({summaries.length})
             </div>
-            {summaries.map((s) => (
-              <div key={s.restaurant.id} className="item-row">
-                <div className="top">
-                  <span className="iname">{s.restaurant.name}</span>
-                  <span className="iline">
-                    {s.waiterCount === 1
-                      ? '1 garçom'
-                      : `${s.waiterCount} garçons`}
-                  </span>
+            {summaries.map((s) => {
+              const trial = store.trialStatus(s.restaurant.created_at);
+              return (
+                <div key={s.restaurant.id} className="item-row">
+                  <div className="top">
+                    <span className="iname">{s.restaurant.name}</span>
+                    <span className="iline">
+                      {s.waiterCount === 1
+                        ? '1 garçom'
+                        : `${s.waiterCount} garçons`}
+                    </span>
+                  </div>
+                  <div className="note-line">
+                    Dono: {s.ownerName} · Cadastrado em{' '}
+                    {formatDateTime(s.restaurant.created_at)}
+                  </div>
+                  <div className="note-line">
+                    Plano: {store.planLabel(s.restaurant.plan)} · Período
+                    grátis:{' '}
+                    {trial.inTrial
+                      ? `${
+                          trial.daysLeft === 1
+                            ? 'resta 1 dia'
+                            : `restam ${trial.daysLeft} dias`
+                        } (termina em ${formatDate(trial.end)})`
+                      : `encerrado em ${formatDate(trial.end)}`}
+                  </div>
                 </div>
-                <div className="note-line">
-                  Dono: {s.ownerName} · Cadastrado em{' '}
-                  {formatDateTime(s.restaurant.created_at)}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </>
         )}
         <div style={{ height: 12 }} />
@@ -3478,7 +3562,9 @@ function HomeView({
   onRegister,
 }: {
   onLogin: () => void;
-  onRegister: () => void;
+  /** plano escolhido no cartão da apresentação; sem argumento = botão
+   * genérico (cabeçalho, hero ou fim da página) — cadastro sem plano */
+  onRegister: (plan?: PlanId) => void;
 }) {
   // A landing é escura, igual à da versão de teste: fundo #17110c,
   // título grande em duas cores e CTA laranja-avermelhado #f26a3d.
@@ -3572,7 +3658,7 @@ function HomeView({
         </nav>
         <button
           className="btn btn-orange landing-header-cta"
-          onClick={onRegister}
+          onClick={() => onRegister()}
         >
           Cadastrar meu restaurante
         </button>
@@ -3594,7 +3680,7 @@ function HomeView({
           <div className="landing-hero-btns">
             <button
               className="btn btn-orange"
-              onClick={onRegister}
+              onClick={() => onRegister()}
             >
               Cadastrar meu restaurante
             </button>
@@ -3947,7 +4033,7 @@ function HomeView({
             <span>Suporte 24 horas</span>
             <button
               className="btn btn-orange"
-              onClick={onRegister}
+              onClick={() => onRegister('monthly')}
             >
               Cadastrar meu restaurante
             </button>
@@ -3959,7 +4045,7 @@ function HomeView({
             <span>Suporte 24 horas</span>
             <button
               className="btn btn-orange"
-              onClick={onRegister}
+              onClick={() => onRegister('annual')}
             >
               Cadastrar meu restaurante
             </button>
@@ -3974,7 +4060,7 @@ function HomeView({
           </p>
           <button
             className="btn btn-orange home-cta"
-            onClick={onRegister}
+            onClick={() => onRegister()}
           >
             Cadastrar meu restaurante
           </button>

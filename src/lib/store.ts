@@ -6,6 +6,7 @@ import type {
   OrderWithItems,
   Owner,
   PlatformAdmin,
+  PlanId,
   Product,
   Restaurant,
   Settings,
@@ -447,6 +448,42 @@ export async function isLoginTaken(login: string): Promise<boolean> {
 }
 
 /**
+ * Duração do período grátis dos dois planos, em dias, contada a
+ * partir da data de cadastro do restaurante.
+ */
+export const TRIAL_DAYS = 3;
+
+/** Rótulo do plano pro painel do administrador. */
+export function planLabel(plan?: PlanId | null): string {
+  if (plan === 'monthly') return 'Mensal — R$ 69,99/mês';
+  if (plan === 'annual') return 'Anual — R$ 499,99/ano';
+  return 'Sem plano escolhido';
+}
+
+/** Fim do período grátis, contado da data de cadastro do restaurante. */
+export function trialEndDate(createdAt: string): Date {
+  const start = new Date(createdAt).getTime();
+  return new Date(start + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * Status do período grátis de um restaurante: em trial (com os dias
+ * restantes, arredondados pra cima) ou encerrado (com a data de
+ * término). Restaurante sem plano fica no período grátis do mesmo
+ * jeito — o prazo conta da data de cadastro dele. `now` injetável
+ * pros testes.
+ */
+export function trialStatus(
+  createdAt: string,
+  now: Date = new Date(),
+): { inTrial: boolean; daysLeft: number; end: Date } {
+  const end = trialEndDate(createdAt);
+  const diffMs = end.getTime() - now.getTime();
+  const daysLeft = Math.max(0, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
+  return { inTrial: diffMs > 0, daysLeft, end };
+}
+
+/**
  * Cadastro sozinho (self-service): o dono informa o nome do
  * restaurante, o nome dele, o login e a senha; cria o restaurante +
  * o dono e já deixa o restaurante ativo. Por enquanto o acesso é
@@ -457,6 +494,10 @@ export async function registerRestaurant(input: {
   ownerName: string;
   login: string;
   passwordHash: string;
+  /** plano escolhido no cartão da apresentação; ausente = cadastro
+   * genérico (botão do cabeçalho/hero/rodapé) — fica no período
+   * grátis, sem plano definido. */
+  plan?: PlanId | null;
 }): Promise<{ restaurant: Restaurant; owner: Owner }> {
   const login = input.login.trim();
   if (await isLoginTaken(login)) {
@@ -467,6 +508,7 @@ export async function registerRestaurant(input: {
   const restaurant: Restaurant = {
     id: newId(),
     name: input.restaurantName.trim(),
+    plan: input.plan ?? null,
     created_at: nowIso(),
   };
   const owner: Owner = {
@@ -492,6 +534,7 @@ export async function registerRestaurant(input: {
   const { error: rErr } = await sb().from('restaurants').insert({
     id: restaurant.id,
     name: restaurant.name,
+    plan: restaurant.plan ?? null,
   });
   if (rErr) throw rErr;
   const { data, error } = await sb()
@@ -956,10 +999,10 @@ export async function authenticate(
 
 /** Endereço que o QR Code dos garçons codifica: abre o sistema direto
  * na tela de login do garçom (só login e senha), pelo parâmetro
- * ?tela=garcom — sem passar pela apresentação nem pelos links de
- * dono, cadastro e administrador. */
+ * ?acesso=garcom — igual ao artefato; ?tela=garcom também é aceito
+ * (links antigos continuam funcionando). */
 export function waiterLoginUrl(baseUrl: string): string {
-  return `${baseUrl.replace(/\/+$/, '')}/?tela=garcom`;
+  return `${baseUrl.replace(/\/+$/, '')}/?acesso=garcom`;
 }
 
 export async function listProducts(): Promise<Product[]> {

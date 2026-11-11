@@ -12,11 +12,21 @@
 -- por ele. O login (dono ou garçom) é ÚNICO na plataforma toda.
 
 -- Restaurantes cadastrados na plataforma (cadastro sozinho, pelo dono).
+-- plan: plano escolhido no cadastro — 'monthly' (R$ 69,99/mês) ou
+-- 'annual' (R$ 499,99/ano). Os dois começam com 3 dias grátis,
+-- contados da data de cadastro (created_at). null = restaurante
+-- cadastrado antes dos planos, ou sem plano escolhido — fica no
+-- período grátis do mesmo jeito.
 create table if not exists public.restaurants (
   id uuid primary key,
   name text not null,
+  plan text check (plan in ('monthly', 'annual')),
   created_at timestamptz not null default now()
 );
+
+-- Para bancos criados com a versão anterior do schema (sem a coluna):
+alter table public.restaurants
+  add column if not exists plan text check (plan in ('monthly', 'annual'));
 
 -- Administrador da plataforma (só o Luis) — vê QUAIS restaurantes
 -- estão cadastrados (nome, dono, data, nº de garçons). NÃO vê
