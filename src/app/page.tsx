@@ -37,14 +37,12 @@ type View =
   | 'serve'
   | 'summary'
   | 'settings'
-  | 'closed'
   | 'review'
   | 'menu'
   | 'owner'
   | 'owner-waiters'
   | 'owner-menu'
   | 'owner-settings'
-  | 'owner-qr'
   | 'admin';
 
 function brl(cents: number): string {
@@ -92,6 +90,32 @@ interface Session {
   login: string;
   /** restaurante da sessão (garçom e dono); ausente no admin */
   restaurant_id?: string;
+}
+
+interface PrintedVia {
+  id: string;
+  orderId: string;
+  station: 'Cozinha' | 'Bar' | 'Balcão — conta';
+  count: number;
+  time: string;
+  ticket: TicketData;
+}
+
+/** Produtos pausados pelo dono: guardados no aparelho, por
+ * restaurante — pausar não muda o banco nem o cardápio, só esconde
+ * o produto da tela de pedir do garçom. */
+const PAUSED_KEY_PREFIX = 'paused_products_v1_';
+
+function loadPausedIds(restaurantId: string | null): Set<string> {
+  if (!restaurantId) return new Set();
+  try {
+    const raw = safeGet(PAUSED_KEY_PREFIX + restaurantId);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw) as unknown;
+    return new Set(Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
 }
 
 interface TicketData {
@@ -162,20 +186,21 @@ const SERVE_OPTIONS = [
 /** Categoria especial: mostra todos os produtos. */
 const ALL_PRODUCTS = '__todos__';
 
+/** true quando o endereço pede só o login do garçom (QR Code dos
+ * garçons): ?acesso=garcom (igual ao artefato) ou ?tela=garcom
+ * (links antigos continuam funcionando). Abre só a tela de login
+ * do garçom — sem apresentação e sem os links de dono, cadastro e
+ * administrador. */
+function isWaiterOnlyParam(): boolean {
+  if (typeof window === 'undefined') return false;
+  const q = new URLSearchParams(window.location.search);
+  return q.get('acesso') === 'garcom' || q.get('tela') === 'garcom';
+}
+
 function GarcomApp() {
-  /** true quando o endereço tem ?tela=garcom (QR Code dos garçons):
-   * abre só a tela de login do garçom — sem apresentação e sem os
-   * links de dono, cadastro e administrador. */
-  const [waiterOnly, setWaiterOnly] = useState(
-    () =>
-      typeof window !== 'undefined' &&
-      new URLSearchParams(window.location.search).get('tela') === 'garcom',
-  );
+  const [waiterOnly, setWaiterOnly] = useState(() => isWaiterOnlyParam());
   const [view, setView] = useState<View>(() =>
-    typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).get('tela') === 'garcom'
-      ? 'login'
-      : 'home',
+    isWaiterOnlyParam() ? 'login' : 'home',
   );
   const [booting, setBooting] = useState(true);
   const [settings, setSettings] = useState<Settings>({
@@ -189,22 +214,39 @@ function GarcomApp() {
   const [serveProduct, setServeProduct] = useState<Product | null>(null);
   /** cerveja: null = ainda não perguntou se precisa de copos; true = sim, pede a quantidade */
   const [beerCups, setBeerCups] = useState<boolean | null>(null);
-  /** quantidade (copos p/ cerveja, canecas p/ torre) */
-  const [serveQty, setServeQty] = useState(1);
+  /** quantidade (copos p/ cerveja, canecas p/ torre) — padrão 2 */
+  const [serveQty, setServeQty] = useState(2);
   const [orderCategory, setOrderCategory] = useState<string | null>(null);
   const [orderSearch, setOrderSearch] = useState('');
   /** busca por número na tela de mesas ("Digite o nº da mesa/comanda...") */
   const [tableSearch, setTableSearch] = useState('');
+  /** mesa abrindo agora (o quadrado mostra "Abrindo…" enquanto abre) */
+  const [openingTable, setOpeningTable] = useState<number | null>(null);
   /** menu hambúrguer da tela de mesas (Revisão / Sair) */
   const [menuOpen, setMenuOpen] = useState(false);
   /** contas fechadas p/ a tela de Revisão */
   const [closedBills, setClosedBills] = useState<ClosedBill[]>([]);
+  /** itens + hora de abertura de cada conta fechada (p/ a Revisão
+   * mostrar "N itens" no cartão e o detalhe ao expandir) */
+  const [billDetails, setBillDetails] = useState<
+    Record<string, { items: OrderItem[]; openedAt: string }>
+  >({});
+  /** nº sequencial da conta ("Pedido Nº") — só existe p/ a conta que
+   * acabou de fechar neste aparelho; conta antiga mostra "—" */
+  const [billNumbers, setBillNumbers] = useState<Record<string, number>>({});
+  /** conta expandida na Revisão (e a recém-fechada, em destaque) */
+  const [expandedBillId, setExpandedBillId] = useState<string | null>(null);
+  const [highlightedBillId, setHighlightedBillId] = useState<string | null>(
+    null,
+  );
+  /** vias impressas da mesa aberta (p/ reabrir o cupom no resumo) */
+  const [printedVias, setPrintedVias] = useState<PrintedVia[]>([]);
+  /** cupom aberto no modal "Via impressa" (a partir da lista de vias) */
+  const [viewTicket, setViewTicket] = useState<TicketData | null>(null);
+  /** produtos pausados pelo dono (não aparecem na tela de pedir) —
+   * guardados neste aparelho, sem mudar o banco */
+  const [pausedIds, setPausedIds] = useState<Set<string>>(new Set());
   const [tickets, setTickets] = useState<TicketData | null>(null);
-  const [closedReview, setClosedReview] = useState<{
-    bill: ClosedBill;
-    items: OrderItem[];
-    tableNumber: number;
-  } | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -272,12 +314,10 @@ function GarcomApp() {
   useEffect(() => {
     (async () => {
       try {
-        // QR Code dos garçons (?tela=garcom): pula a apresentação e
-        // abre só a tela de login do garçom — sessão de dono ou de
-        // administrador não é restaurada nesse endereço.
-        const onlyWaiter =
-          new URLSearchParams(window.location.search).get('tela') ===
-          'garcom';
+        // QR Code dos garçons (?acesso=garcom ou ?tela=garcom): pula a
+        // apresentação e abre só a tela de login do garçom — sessão de
+        // dono ou de administrador não é restaurada nesse endereço.
+        const onlyWaiter = isWaiterOnlyParam();
         setWaiterOnly(onlyWaiter);
         setHasAdmin((await store.getPlatformAdmin()) !== null);
         if (!onlyWaiter) {
@@ -372,14 +412,14 @@ function GarcomApp() {
 
   /** Login único do formulário principal: o login é único na
    * plataforma toda — se for de garçom, abre as mesas; se for de
-   * dono, abre a área do dono. Na tela do QR (?tela=garcom), só o
-   * garçom entra (o login de dono não vale ali). */
+   * dono, abre a área do dono. Na tela do QR (?acesso=garcom ou
+   * ?tela=garcom), só o garçom entra (o login de dono não vale ali). */
   async function handleLogin(login: string, password: string) {
     setError('');
     setBusy(true);
     try {
       const result = await store.authenticate(login.trim(), password);
-      if (!result) throw new Error('Login ou senha incorretos.');
+      if (!result) throw new Error('Não foi possível entrar. Tente de novo.');
       if (result.kind === 'waiter') {
         const waiter = result.user;
         if (!waiter.restaurant_id) {
@@ -401,7 +441,7 @@ function GarcomApp() {
         setView('tables');
         return;
       }
-      if (waiterOnly) throw new Error('Login ou senha incorretos.');
+      if (waiterOnly) throw new Error('Não foi possível entrar. Tente de novo.');
       await enterOwnerArea(result.user);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível entrar.');
@@ -457,10 +497,10 @@ function GarcomApp() {
     setBusy(true);
     try {
       const owner = await store.findOwnerByLogin(login.trim());
-      if (!owner) throw new Error('Login ou senha incorretos.');
+      if (!owner) throw new Error('Não foi possível entrar. Tente de novo.');
       const hash = await store.hashPassword(password);
       if (hash !== owner.password_hash) {
-        throw new Error('Login ou senha incorretos.');
+        throw new Error('Não foi possível entrar. Tente de novo.');
       }
       await enterOwnerArea(owner);
     } catch (e) {
@@ -562,14 +602,30 @@ function GarcomApp() {
     setView(waiterOnly ? 'login' : 'home');
   }
 
-  /** Abre a Revisão: lista das mesas fechadas (menu hambúrguer). */
+  /** Abre a Revisão: lista das mesas fechadas (menu hambúrguer).
+   * Carrega também os itens de cada conta (p/ o cartão mostrar
+   * "N itens" e o detalhe ao expandir). Mostra as 20 últimas. */
   async function openReview() {
     setMenuOpen(false);
     setError('');
     setBusy(true);
     try {
       const bills = await store.listClosedBills();
-      setClosedBills(bills);
+      const shown = bills.slice(0, 20);
+      setClosedBills(shown);
+      const details: Record<string, { items: OrderItem[]; openedAt: string }> = {};
+      await Promise.all(
+        shown.map(async (b) => {
+          const ow = await store.getOrderWithItems(b.order_id);
+          if (ow) {
+            details[b.id] = {
+              items: ow.items,
+              openedAt: ow.order.created_at,
+            };
+          }
+        }),
+      );
+      setBillDetails(details);
       setView('review');
     } catch (e) {
       setError(
@@ -580,26 +636,42 @@ function GarcomApp() {
     }
   }
 
-  /** Abre o detalhe de uma conta fechada (a partir da Revisão). */
-  async function openClosedBill(bill: ClosedBill) {
-    setError('');
-    setBusy(true);
+  /** Pausa/reativa um produto do cardápio (só o dono): pausado, ele
+   * some da tela de pedir do garçom e aparece como "pausado" na
+   * lista do dono. Guardado neste aparelho, sem mudar o banco. */
+  function togglePauseProduct(id: string) {
+    setPausedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      const rid = restaurant?.id ?? getActiveRestaurantIdSafe();
+      if (rid) safeSet(PAUSED_KEY_PREFIX + rid, JSON.stringify([...next]));
+      return next;
+    });
+  }
+
+  function getActiveRestaurantIdSafe(): string | null {
     try {
-      const ow = await store.getOrderWithItems(bill.order_id);
-      setClosedReview({
-        bill,
-        items: ow ? ow.items : [],
-        tableNumber: bill.table_number,
-      });
-      setView('closed');
-    } catch (e) {
-      setError(
-        e instanceof Error ? e.message : 'Não foi possível abrir a conta.',
-      );
-    } finally {
-      setBusy(false);
+      return store.getActiveRestaurantId();
+    } catch {
+      return null;
     }
   }
+
+  // Produtos pausados: carrega os do restaurante da sessão.
+  useEffect(() => {
+    setPausedIds(loadPausedIds(restaurant?.id ?? null));
+  }, [restaurant?.id]);
+
+  // A grade de mesas atualiza a cada 5 s (outro garçom pode ter
+  // aberto ou fechado uma mesa nesse meio-tempo).
+  useEffect(() => {
+    if (view !== 'tables' || !session) return;
+    const t = setInterval(() => {
+      void refresh();
+    }, 5000);
+    return () => clearInterval(t);
+  }, [view, session, refresh]);
 
   /**
    * Confere no banco se o dia está encerrado (vale pra todos os
@@ -616,6 +688,8 @@ function GarcomApp() {
     if (!session) return;
     setError('');
     setMenuOpen(false);
+    setOpeningTable(tableNumber);
+    try {
     // Dia encerrado: o garçom só reabre uma mesa que já era dele (pra
     // fechar); mesa nova não abre — o dia reabre sozinho às 9h.
     const freshOrders = await store.listOpenOrders();
@@ -646,7 +720,7 @@ function GarcomApp() {
         await refresh();
       } else if (existing.order.waiter_id !== session.id) {
         setError(
-          `A Mesa ${tableNumber} foi aberta por ${existing.order.waiter_name}. Só ele pode abrir.`,
+          `A mesa ${tableNumber} está com ${existing.order.waiter_name} — só ele pode mexer nela.`,
         );
         return;
       } else {
@@ -675,6 +749,9 @@ function GarcomApp() {
     setOrderCategory(null);
     setOrderSearch('');
     setView('order');
+    } finally {
+      setOpeningTable(null);
+    }
   }
 
   /** Volta às mesas descartando o rascunho (mesa aberta sem nenhum item). */
@@ -693,7 +770,7 @@ function GarcomApp() {
     ) {
       setServeProduct(product);
       setBeerCups(null);
-      setServeQty(1);
+      setServeQty(2);
       setView('serve');
       return;
     }
@@ -709,14 +786,15 @@ function GarcomApp() {
     await addProduct(product, option);
   }
 
-  /** Cerveja — "Precisa de copos?": Não → entra sem copos; Sim → pede a quantidade. */
+  /** Cerveja — "Precisa de copos?": Não precisa → entra como
+   * "Sem copos"; Precisa → pede a quantidade. */
   async function chooseBeerCups(needsCups: boolean) {
     const product = serveProduct;
     if (!product) return;
     if (!needsCups) {
       setServeProduct(null);
       setBeerCups(null);
-      await addProduct(product, 'sem copos');
+      await addProduct(product, 'Sem copos');
       return;
     }
     setBeerCups(true);
@@ -757,7 +835,7 @@ function GarcomApp() {
         if (taken) {
           if (taken.order.waiter_id !== session.id) {
             setError(
-              `A Mesa ${currentOrder.order.table_number} foi aberta por ${taken.order.waiter_name}. Só ele pode abrir.`,
+              `A mesa ${currentOrder.order.table_number} está com ${taken.order.waiter_name} — só ele pode mexer nela.`,
             );
             setCurrentOrder(null);
             setOpenOrders(open);
@@ -857,7 +935,7 @@ function GarcomApp() {
       const sentAt = new Date().toISOString();
       await store.sendOrder(currentOrder.order.id);
       const { kitchen, bar } = splitTickets(pending);
-      setTickets({
+      const ticket: TicketData = {
         kind: 'send',
         tableNumber: currentOrder.order.table_number,
         kitchen,
@@ -866,7 +944,36 @@ function GarcomApp() {
         orderNumber,
         sentAt,
         waiterName: currentOrder.order.waiter_name,
-      });
+      };
+      setTickets(ticket);
+      // Guarda as vias impressas desta mesa p/ reabrir o cupom no resumo.
+      setPrintedVias((prev) => [
+        ...prev.filter((v) => v.orderId !== currentOrder.order.id || v.station === 'Balcão — conta'),
+        ...(kitchen.length > 0
+          ? [
+              {
+                id: `via-${orderNumber}-cozinha`,
+                orderId: currentOrder.order.id,
+                station: 'Cozinha' as const,
+                count: kitchen.reduce((s, i) => s + i.qty, 0),
+                time: sentAt,
+                ticket,
+              },
+            ]
+          : []),
+        ...(bar.length > 0
+          ? [
+              {
+                id: `via-${orderNumber}-bar`,
+                orderId: currentOrder.order.id,
+                station: 'Bar' as const,
+                count: bar.reduce((s, i) => s + i.qty, 0),
+                time: sentAt,
+                ticket,
+              },
+            ]
+          : []),
+      ]);
       await refreshCurrentOrder(currentOrder.order.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível enviar o pedido.');
@@ -875,17 +982,20 @@ function GarcomApp() {
     }
   }
 
-  async function closeTable(sendPendingFirst: boolean) {
+  /** "Fechar mesa": com item pendente, o botão mostra o aviso e não
+   * fecha — primeiro envia. Sem pendência, abre a confirmação
+   * "Fechar a mesa N?" com os valores da conta. */
+  function requestClose() {
     if (!currentOrder) return;
-    const pending = currentOrder.items.filter((i) => !i.sent);
-    if (pending.length > 0 && !sendPendingFirst) {
-      setConfirmClose(true);
-      return;
-    }
+    if (currentOrder.items.filter((i) => !i.sent).length > 0) return;
+    setConfirmClose(true);
+  }
+
+  async function closeTable() {
+    if (!currentOrder) return;
     setConfirmClose(false);
     setBusy(true);
     try {
-      if (pending.length > 0) await store.sendOrder(currentOrder.order.id);
       // A conta é um documento impresso como os outros: ganha o próximo
       // número sequencial (a conta cobre a mesa inteira, que pode ter
       // vários envios — por isso não reaproveita o número de um envio).
@@ -897,7 +1007,7 @@ function GarcomApp() {
       const ow = await store.getOrderWithItems(currentOrder.order.id);
       const allItems = ow?.items ?? currentOrder.items;
       const { kitchen, bar } = splitTickets(allItems);
-      setTickets({
+      const ticket: TicketData = {
         kind: 'close',
         tableNumber: currentOrder.order.table_number,
         kitchen,
@@ -906,14 +1016,35 @@ function GarcomApp() {
         orderNumber: billNumber,
         sentAt: bill.closed_at,
         waiterName: bill.waiter_name,
-      });
-      setClosedReview({
-        bill,
-        items: allItems,
-        tableNumber: currentOrder.order.table_number,
-      });
+      };
+      setTickets(ticket);
+      setPrintedVias((prev) => [
+        ...prev,
+        {
+          id: `via-${billNumber}-balcao`,
+          orderId: currentOrder.order.id,
+          station: 'Balcão — conta',
+          count: allItems.reduce((s, i) => s + i.qty, 0),
+          time: bill.closed_at,
+          ticket,
+        },
+      ]);
+      setBillNumbers((prev) => ({ ...prev, [bill.id]: billNumber }));
+      setBillDetails((prev) => ({
+        ...prev,
+        [bill.id]: {
+          items: allItems,
+          openedAt: ow?.order.created_at ?? currentOrder.order.created_at,
+        },
+      }));
+      // A conta aparece primeiro; ao ver a revisão, a recém-fechada
+      // abre destacada com borda roxa.
+      const freshBills = await store.listClosedBills();
+      setClosedBills(freshBills.slice(0, 20));
+      setExpandedBillId(bill.id);
+      setHighlightedBillId(bill.id);
       setCurrentOrder(null);
-      setView('closed');
+      setView('review');
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível fechar a mesa.');
@@ -931,8 +1062,10 @@ function GarcomApp() {
 
   const pendingItems = (currentOrder?.items ?? []).filter((i) => !i.sent);
   const sentItems = (currentOrder?.items ?? []).filter((i) => i.sent);
+  /** produtos que o garçom vê na tela de pedir (pausado some) */
+  const availableProducts = products.filter((p) => !pausedIds.has(p.id));
   const categories = Array.from(
-    new Set(products.map((p) => p.category)),
+    new Set(availableProducts.map((p) => p.category)),
   ).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 
   if (booting) {
@@ -974,19 +1107,12 @@ function GarcomApp() {
   if (view === 'register') {
     return (
       <div className="app">
-        <div className="hero">
-          <h1>Cadastrar meu restaurante</h1>
-          <p>
-            Crie o seu restaurante e o seu acesso de dono. Por enquanto o
-            acesso é liberado no cadastro, sem pagamento.
-          </p>
-        </div>
-        <div className="content">
+        <div className="content auth-wide">
           {error && <div className="error">{error}</div>}
           <RegisterRestaurantView
             busy={busy}
             onRegister={handleRestaurantRegister}
-            onCancel={() => setView('home')}
+            onCancel={() => setView('login')}
           />
           <div className="mode-badge">
             {isSupabase
@@ -1003,21 +1129,16 @@ function GarcomApp() {
   if (view === 'register-success') {
     return (
       <div className="app">
-        <div className="hero">
-          <h1>Cadastro realizado com sucesso</h1>
-          <p>
-            O restaurante {registeredRestaurantName} foi criado. Agora entre
-            com o seu acesso de dono para configurar o financeiro, os garçons
-            e o cardápio.
-          </p>
-        </div>
-        <div className="content">
-          <div className="card">
-            <div className="ok-note">
-              Seu usuário de dono é <strong>{registeredLogin}</strong> —
-              guarde bem a sua senha.
+        <div className="content auth-wide">
+          <div className="card success-card">
+            <div className="success-check" aria-hidden>
+              ✓
             </div>
-            <div style={{ height: 12 }} />
+            <h2>Cadastro realizado com sucesso!</h2>
+            <p className="hint">
+              O restaurante <strong>{registeredRestaurantName}</strong> foi
+              criado com o login <strong>{registeredLogin}</strong>.
+            </p>
             <button
               className="btn btn-purple"
               onClick={() => {
@@ -1025,12 +1146,11 @@ function GarcomApp() {
                 setView('login');
               }}
             >
-              Entrar no financeiro
+              Entrar no meu financeiro →
             </button>
-            <div style={{ height: 10 }} />
-            <button className="btn btn-ghost" onClick={() => setView('home')}>
-              Voltar à apresentação
-            </button>
+            <p className="hint" style={{ marginTop: 12, marginBottom: 0 }}>
+              O login já vai preenchido - é só digitar a sua senha.
+            </p>
           </div>
         </div>
       </div>
@@ -1042,33 +1162,56 @@ function GarcomApp() {
   if (view === 'login') {
     return (
       <div className="app">
-        <div className="hero">
-          <h1>Sistema do Garçom</h1>
-          <p>Entre com o seu acesso para abrir as mesas.</p>
-        </div>
-        <div className="content">
-          {error && <div className="error">{error}</div>}
-          {ownerAuth ? (
+        {ownerAuth ? (
+          <div className="content auth">
+            {error && <div className="error">{error}</div>}
             <OwnerAuthView
               busy={busy}
               initialLogin={registeredLogin}
               onLogin={handleOwnerLogin}
               onCancel={() => setOwnerAuth(false)}
             />
-          ) : adminAuth ? (
-            <AdminAuthView
-              mode={adminAuth}
-              busy={busy}
-              onLogin={handleAdminLogin}
-              onCreate={handleAdminCreate}
-              onCancel={() => setAdminAuth(null)}
-            />
-          ) : (
-            <>
+          </div>
+        ) : adminAuth ? (
+          <>
+            <div className="hero">
+              <h1>Sistema do Garçom</h1>
+              <p>Entre com o seu acesso para abrir as mesas.</p>
+            </div>
+            <div className="content auth">
+              {error && <div className="error">{error}</div>}
+              <AdminAuthView
+                mode={adminAuth}
+                busy={busy}
+                onLogin={handleAdminLogin}
+                onCreate={handleAdminCreate}
+                onCancel={() => setAdminAuth(null)}
+              />
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="hero">
+              <div className="eyebrow">Restaurante</div>
+              <h1>
+                {waiterOnly ? 'Acesso do garçom' : 'Entrar no sistema'}
+              </h1>
+              <p>
+                {waiterOnly
+                  ? 'Entre com seu usuário e senha pra ver as mesas do seu restaurante.'
+                  : 'Entre com seu usuário e senha: o garçom cai direto nas mesas, e o dono, no painel do restaurante dele.'}
+              </p>
+            </div>
+            <div className="content auth">
+              {error && <div className="error">{error}</div>}
               <LoginForm busy={busy} onLogin={handleLogin} />
-              {/* Na tela do QR (?tela=garcom) só aparece o login do
-                  garçom — sem "Sou o dono", sem cadastro e sem a área
-                  do administrador. */}
+              <p className="hint" style={{ textAlign: 'center' }}>
+                O acesso do garçom é criado pelo dono do restaurante, na
+                área financeira dele.
+              </p>
+              {/* Na tela do QR (?acesso=garcom ou ?tela=garcom) só
+                  aparece o login do garçom — sem "Sou o dono", sem
+                  cadastro e sem a área do administrador. */}
               {!waiterOnly && (
                 <>
                   <button
@@ -1093,14 +1236,14 @@ function GarcomApp() {
                   </button>
                 </>
               )}
-            </>
-          )}
-          <div className="mode-badge">
-            {isSupabase
-              ? 'Banco de dados: Supabase (nuvem)'
-              : 'Banco de dados: local (neste aparelho)'}
-          </div>
-        </div>
+              <div className="mode-badge">
+                {isSupabase
+                  ? 'Banco de dados: Supabase (nuvem)'
+                  : 'Banco de dados: local (neste aparelho)'}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     );
   }
@@ -1124,6 +1267,7 @@ function GarcomApp() {
         waiters={waiters}
         settings={settings}
         restaurantName={restaurant?.name ?? ''}
+        ownerName={ownerSession.name}
         onNavigate={setView}
         onLogout={handleOwnerLogout}
         onRefresh={refreshOwner}
@@ -1138,6 +1282,7 @@ function GarcomApp() {
         bills={ownerBills}
         defaultPct={settings.default_commission_pct ?? 8}
         restaurantName={restaurant?.name ?? ''}
+        ownerName={ownerSession.name}
         onChanged={refreshOwner}
         onNavigate={setView}
         onLogout={handleOwnerLogout}
@@ -1150,6 +1295,9 @@ function GarcomApp() {
       <OwnerMenuView
         products={products}
         restaurantName={restaurant?.name ?? ''}
+        ownerName={ownerSession.name}
+        pausedIds={pausedIds}
+        onTogglePause={togglePauseProduct}
         onChanged={refreshOwner}
         onNavigate={setView}
         onLogout={handleOwnerLogout}
@@ -1162,19 +1310,8 @@ function GarcomApp() {
       <OwnerSettingsView
         settings={settings}
         restaurantName={restaurant?.name ?? ''}
+        ownerName={ownerSession.name}
         onSaved={refreshOwner}
-        onNavigate={setView}
-        onLogout={handleOwnerLogout}
-      />
-    );
-  }
-
-  /* ------------------------------ DONO: QR CODE DOS GARÇONS ------------------------------ */
-
-  if (view === 'owner-qr' && ownerSession) {
-    return (
-      <OwnerQrView
-        restaurantName={restaurant?.name ?? ''}
         onNavigate={setView}
         onLogout={handleOwnerLogout}
       />
@@ -1213,10 +1350,16 @@ function GarcomApp() {
     // Dia encerrado pelo dono: mesa nova não abre — só fechar as que já
     // estavam abertas. Reabre sozinho amanhã às 9h.
     const dayClosed = store.isDayClosed(settings);
+    const firstName = session.name.split(' ')[0];
     return (
       <div className="app">
         <header className="header header-blue">
-          <h1>Mesas</h1>
+          <div>
+            <h1>Mesas</h1>
+            <div className="sub">
+              Olá, {firstName} · {restaurant?.name ?? ''}
+            </div>
+          </div>
           <button
             className="menu-btn"
             aria-label="Menu"
@@ -1247,9 +1390,9 @@ function GarcomApp() {
           {error && <div className="error">{error}</div>}
           {dayClosed && (
             <div className="error">
-              Dia encerrado — não dá pra abrir mesa nova nem fazer pedido
-              novo. Mesas abertas ainda podem ser fechadas. Reabre amanhã
-              às 9h.
+              Dia encerrado — o dono finalizou o dia. Não dá pra abrir mesa
+              nova nem fazer pedido novo; o dia reabre às 9h. Mesas já
+              abertas ainda podem ser fechadas.
             </div>
           )}
           <input
@@ -1294,7 +1437,9 @@ function GarcomApp() {
                 disabled={busy || dayClosed}
                 onClick={() => openTable(n)}
               >
-                <span className="mesa-open">ABRIR</span>
+                <span className="mesa-open">
+                  {openingTable === n ? 'Abrindo…' : 'ABRIR'}
+                </span>
                 <span className="mesa-num">{pad2(n)}</span>
               </button>
             ))}
@@ -1313,21 +1458,17 @@ function GarcomApp() {
     const tableNumber = currentOrder.order.table_number;
     const query = orderSearch.trim().toLowerCase();
     const shownProducts = query
-      ? products.filter(
+      ? availableProducts.filter(
           (p) =>
             p.name.toLowerCase().includes(query) ||
             p.category.toLowerCase().includes(query),
         )
       : orderCategory === ALL_PRODUCTS
-        ? products
+        ? availableProducts
         : orderCategory
-          ? products.filter((p) => p.category === orderCategory)
+          ? availableProducts.filter((p) => p.category === orderCategory)
           : [];
     const pendingCount = pendingItems.reduce((s, i) => s + i.qty, 0);
-    const pendingTotal = pendingItems.reduce(
-      (s, i) => s + i.price_cents * i.qty,
-      0,
-    );
 
     return (
       <div className="app">
@@ -1390,10 +1531,12 @@ function GarcomApp() {
           </div>
           {query ? (
             <>
-              <div className="section-title">Resultados da busca</div>
+              <div className="section-title">
+                Resultados para &quot;{orderSearch}&quot;
+              </div>
               {shownProducts.length === 0 ? (
                 <div className="empty">
-                  Nenhum produto encontrado para “{orderSearch}”.
+                  Nenhum produto encontrado. Confira o nome.
                 </div>
               ) : (
                 <div className="prod-grid">
@@ -1442,8 +1585,8 @@ function GarcomApp() {
             <>
               {categories.length === 0 ? (
                 <div className="empty">
-                  Nenhum produto cadastrado. Peça ao dono para cadastrar o
-                  cardápio.
+                  O cardápio ainda está vazio. O cadastro dos produtos é
+                  feito pelo dono, na área financeira do restaurante.
                 </div>
               ) : (
                 <div className="cat-grid">
@@ -1492,7 +1635,7 @@ function GarcomApp() {
               setView('summary');
             }}
           >
-            ✓ REVISAR ({pendingCount}) · {brl(pendingTotal)}
+            ✓ REVISAR
           </button>
         </div>
       </div>
@@ -1503,13 +1646,14 @@ function GarcomApp() {
 
   if (view === 'serve' && serveProduct && currentOrder) {
     const drinkType = serveProduct.drink_type ?? 'refrigerante';
+    const qtyUnit = drinkType === 'torre' ? 'caneca' : 'copo';
     return (
       <div className="app">
         <header className="header">
           <div>
-            <h1>Como servir</h1>
+            <h1>{serveProduct.name}</h1>
             <div className="sub">
-              {serveProduct.name} · Mesa {currentOrder.order.table_number}
+              Mesa {currentOrder.order.table_number}
             </div>
           </div>
           <button
@@ -1529,23 +1673,25 @@ function GarcomApp() {
               <p className="serve-q">Precisa de copos?</p>
               <div className="cat-grid">
                 <button
-                  className="cat-tile"
+                  className="serve-tile"
                   onClick={() => void chooseBeerCups(true)}
                 >
-                  Sim
+                  Precisa de copos
                 </button>
                 <button
-                  className="cat-tile"
+                  className="serve-tile"
                   onClick={() => void chooseBeerCups(false)}
                 >
-                  Não
+                  Não precisa
                 </button>
               </div>
             </>
           ) : drinkType === 'cerveja' || drinkType === 'torre' ? (
             <>
               <p className="serve-q">
-                {drinkType === 'torre' ? 'Quantas canecas?' : 'Quantos copos?'}
+                {drinkType === 'torre'
+                  ? 'Quantas canecas vai precisar?'
+                  : 'Quantos copos?'}
               </p>
               <div className="serve-qty">
                 <button
@@ -1557,7 +1703,7 @@ function GarcomApp() {
                 <span>{serveQty}</span>
                 <button
                   aria-label="Aumentar"
-                  onClick={() => setServeQty((q) => Math.min(20, q + 1))}
+                  onClick={() => setServeQty((q) => Math.min(30, q + 1))}
                 >
                   +
                 </button>
@@ -1567,21 +1713,25 @@ function GarcomApp() {
                 style={{ width: '100%', marginTop: 16 }}
                 onClick={() => void confirmServeQty()}
               >
-                Adicionar
+                Adicionar — {serveQty}{' '}
+                {serveQty === 1 ? qtyUnit : `${qtyUnit}s`}
               </button>
             </>
           ) : (
-            <div className="cat-grid">
-              {SERVE_OPTIONS.map((opt) => (
-                <button
-                  key={opt}
-                  className="cat-tile"
-                  onClick={() => void chooseServe(opt)}
-                >
-                  {opt}
-                </button>
-              ))}
-            </div>
+            <>
+              <p className="serve-q">Como a bebida vai ser servida?</p>
+              <div className="cat-grid">
+                {SERVE_OPTIONS.map((opt) => (
+                  <button
+                    key={opt}
+                    className="serve-tile"
+                    onClick={() => void chooseServe(opt)}
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
+            </>
           )}
         </div>
       </div>
@@ -1608,7 +1758,9 @@ function GarcomApp() {
         <div className="content">
           {error && <div className="error">{error}</div>}
 
-          <div className="summary-section">A enviar</div>
+          <div className="summary-section pending">
+            A enviar ({pendingItems.length})
+          </div>
           {pendingItems.length === 0 && (
             <div className="empty">
               Nenhum item novo. Toque em “Adicionar produtos” para pedir.
@@ -1618,6 +1770,12 @@ function GarcomApp() {
             <ItemRow
               key={item.id}
               item={item}
+              station={
+                products.find((p) => p.id === item.product_id)
+                  ?.prints_in === 'bar'
+                  ? 'bar'
+                  : 'kitchen'
+              }
               onQty={(d) => changeQty(item, d)}
               onRemove={async () => {
                 await removeOrderItem(item.id);
@@ -1629,21 +1787,41 @@ function GarcomApp() {
           {sentItems.length > 0 && (
             <>
               <div className="summary-section">Já enviado</div>
-              {sentItems.map((item) => (
-                <div key={item.id} className="item-row sent">
-                  <div className="top">
-                    <span className="iname">
-                      {item.qty}× {item.product_name}
-                    </span>
-                    <span className="iline">
-                      {brl(item.price_cents * item.qty)}
-                    </span>
+              {sentItems.map((item) => {
+                const station =
+                  products.find((p) => p.id === item.product_id)
+                    ?.prints_in === 'bar'
+                    ? 'bar'
+                    : 'kitchen';
+                return (
+                  <div key={item.id} className="item-row sent">
+                    <div className="top">
+                      <span className="iname">
+                        {item.qty}× {item.product_name}
+                      </span>
+                      <span className="iline">
+                        {brl(item.price_cents * item.qty)}
+                      </span>
+                    </div>
+                    {item.serve && (
+                      <div className="serve-line">{item.serve}</div>
+                    )}
+                    <div className="item-meta">
+                      <span>{brl(item.price_cents)} cada</span>
+                      <span
+                        className={`station-badge ${
+                          station === 'bar' ? 'bar' : 'kitchen'
+                        }`}
+                      >
+                        {station === 'bar' ? 'Bar' : 'Cozinha'}
+                      </span>
+                    </div>
+                    {item.note && (
+                      <div className="note-line">obs: {item.note}</div>
+                    )}
                   </div>
-                  {item.note && (
-                    <div className="note-line">Obs.: {item.note}</div>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </>
           )}
 
@@ -1657,14 +1835,52 @@ function GarcomApp() {
               <span>{brl(totals.fee)}</span>
             </div>
             <div className="trow total">
-              <span>Total</span>
+              <span>Total da mesa</span>
               <span>{brl(totals.total)}</span>
             </div>
           </div>
+
+          <div style={{ height: 14 }} />
+          <button
+            className="btn btn-green"
+            disabled={busy || pendingItems.length === 0}
+            onClick={sendOrder}
+          >
+            {busy
+              ? 'Enviando…'
+              : `🖨️ Enviar pedido (${pendingItems.length})`}
+          </button>
+          <p className="hint" style={{ textAlign: 'center', marginTop: 10 }}>
+            Depois de enviar, a mesa continua sua: se o cliente pedir mais,
+            é só abrir a mesma mesa e adicionar.
+          </p>
+
+          {printedVias.filter((v) => v.orderId === currentOrder.order.id)
+            .length > 0 && (
+            <>
+              <div className="summary-section">Vias impressas desta mesa</div>
+              {printedVias
+                .filter((v) => v.orderId === currentOrder.order.id)
+                .map((v) => (
+                  <button
+                    key={v.id}
+                    className="review-row"
+                    onClick={() => setViewTicket(v.ticket)}
+                  >
+                    <span className="review-table">{v.station}</span>
+                    <span className="review-meta">
+                      {v.count} {v.count === 1 ? 'item' : 'itens'} ·{' '}
+                      {formatTime(v.time)}
+                    </span>
+                    <span className="review-total">Ver</span>
+                  </button>
+                ))}
+            </>
+          )}
         </div>
         <div className="bottom-bar">
           <button
-            className="btn btn-ghost"
+            className="btn btn-outline-purple"
             onClick={() => {
               setOrderCategory(null);
               setOrderSearch('');
@@ -1674,38 +1890,91 @@ function GarcomApp() {
             Adicionar produtos
           </button>
           <button
-            className="btn btn-purple"
-            disabled={busy || currentOrder.items.length === 0}
-            onClick={() => closeTable(false)}
-          >
-            Fechar mesa
-          </button>
-          <button
             className="btn btn-green"
-            disabled={busy || pendingItems.length === 0}
-            onClick={sendOrder}
+            disabled={
+              busy ||
+              currentOrder.items.length === 0 ||
+              pendingItems.length > 0
+            }
+            onClick={requestClose}
           >
-            Enviar pedido
+            {pendingItems.length > 0
+              ? 'Envie os itens pendentes pra cozinha/bar antes de fechar a mesa.'
+              : '✓ Fechar mesa'}
           </button>
         </div>
         {confirmClose && (
-          <ConfirmModal
-            title="Ainda há itens não enviados"
-            text="Tem item no resumo que ainda não foi enviado para a cozinha/bar. Deseja enviar agora e fechar a conta?"
-            confirmLabel="Enviar e fechar"
-            onConfirm={() => closeTable(true)}
-            onCancel={() => setConfirmClose(false)}
-          />
+          <div className="modal-backdrop">
+            <div className="modal">
+              <h3 style={{ marginTop: 0 }}>
+                Fechar a mesa {tableNumber}?
+              </h3>
+              <p className="hint">
+                A conta completa sai na impressora do balcão e a mesa fica
+                livre.
+              </p>
+              <div className="totals">
+                <div className="trow">
+                  <span>Subtotal</span>
+                  <span>{brl(totals.subtotal)}</span>
+                </div>
+                <div className="trow">
+                  <span>Taxa de serviço ({settings.service_fee_pct}%)</span>
+                  <span>{brl(totals.fee)}</span>
+                </div>
+                <div className="trow total">
+                  <span>Total</span>
+                  <span style={{ color: 'var(--purple)' }}>
+                    {brl(totals.total)}
+                  </span>
+                </div>
+              </div>
+              <div style={{ height: 14 }} />
+              <button
+                className="btn btn-ghost"
+                onClick={() => setConfirmClose(false)}
+              >
+                Voltar
+              </button>
+              <div style={{ height: 10 }} />
+              <button
+                className="btn btn-purple"
+                disabled={busy}
+                onClick={() => void closeTable()}
+              >
+                Fechar e imprimir
+              </button>
+            </div>
+          </div>
         )}
         {tickets && (
           <TicketsModal
             data={tickets}
             products={products}
             restaurantName={restaurant?.name ?? 'Restaurante'}
+            title={
+              tickets.kind === 'close'
+                ? 'Conta fechada — via do balcão'
+                : 'Pedido enviado — vias impressas'
+            }
+            closeLabel={
+              tickets.kind === 'close'
+                ? 'Ver revisão da mesa'
+                : 'OK, voltar à mesa'
+            }
             onClose={() => {
               setTickets(null);
-              setView('tables');
             }}
+          />
+        )}
+        {viewTicket && (
+          <TicketsModal
+            data={viewTicket}
+            products={products}
+            restaurantName={restaurant?.name ?? 'Restaurante'}
+            title="Via impressa"
+            closeLabel="Fechar"
+            onClose={() => setViewTicket(null)}
           />
         )}
       </div>
@@ -1720,104 +1989,154 @@ function GarcomApp() {
         <header className="header">
           <div>
             <h1>Revisão</h1>
-            <div className="sub">Mesas fechadas</div>
           </div>
           <button className="icon-btn" onClick={() => setView('tables')}>
-            ✕ Voltar
+            Mesas
           </button>
         </header>
         <div className="content">
           {error && <div className="error">{error}</div>}
-          {closedBills.length === 0 ? (
-            <div className="empty">Nenhuma mesa fechada ainda.</div>
-          ) : (
-            closedBills.map((bill) => (
-              <button
-                key={bill.id}
-                className="review-row"
-                disabled={busy}
-                onClick={() => openClosedBill(bill)}
-              >
-                <span className="review-table">
-                  Mesa {String(bill.table_number).padStart(2, '0')}
-                </span>
-                <span className="review-meta">
-                  {bill.waiter_name} · {formatTime(bill.closed_at)}
-                </span>
-                <span className="review-total">{brl(bill.total_cents)}</span>
-              </button>
-            ))
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  /* ------------------- REVISÃO DA CONTA FECHADA ------------------- */
-
-  if (view === 'closed' && closedReview) {
-    const { bill, items, tableNumber } = closedReview;
-    return (
-      <div className="app">
-        <header className="header">
-          <div>
-            <h1>Conta fechada - Mesa {tableNumber}</h1>
-            <div className="sub">
-              {bill.waiter_name} · fechada às {formatTime(bill.closed_at)}
-            </div>
-          </div>
-        </header>
-        <div className="content">
           <p className="hint">
-            Confira o que tinha na mesa — itens, quantidades e valores.
+            O que tinha em cada mesa que você fechou. Confira os itens, as
+            quantidades e os valores pra ver se não esqueceu nada ou se
+            adicionou algo sem querer.
           </p>
-          {items.map((item) => (
-            <div key={item.id} className="item-row">
-              <div className="top">
-                <span className="iname">
-                  {item.qty}× {item.product_name}
-                </span>
-                <span className="iline">
-                  {brl(item.price_cents * item.qty)}
-                </span>
-              </div>
-              <div className="note-line">
-                {brl(item.price_cents)} cada
-                {item.note ? ` · Obs.: ${item.note}` : ''}
-              </div>
+          {closedBills.length === 0 ? (
+            <div className="empty">
+              Você ainda não fechou nenhuma mesa. Quando fechar uma conta,
+              ela aparece aqui pra você conferir.
             </div>
-          ))}
-          <div className="totals">
-            <div className="trow">
-              <span>Subtotal</span>
-              <span>{brl(bill.subtotal_cents)}</span>
-            </div>
-            <div className="trow">
-              <span>Taxa de serviço</span>
-              <span>{brl(bill.fee_cents)}</span>
-            </div>
-            <div className="trow total">
-              <span>Total</span>
-              <span>{brl(bill.total_cents)}</span>
-            </div>
-          </div>
-          <div style={{ height: 16 }} />
-          <button
-            className="btn btn-green"
-            onClick={() => {
-              setClosedReview(null);
-              setView('tables');
-            }}
-          >
-            Voltar às mesas
-          </button>
+          ) : (
+            closedBills.map((bill) => {
+              const detail = billDetails[bill.id];
+              const itemCount = detail
+                ? detail.items.reduce((s, i) => s + i.qty, 0)
+                : 0;
+              const expanded = expandedBillId === bill.id;
+              const highlighted = highlightedBillId === bill.id;
+              return (
+                <div
+                  key={bill.id}
+                  className={`review-card${expanded ? ' open' : ''}${
+                    highlighted ? ' highlighted' : ''
+                  }`}
+                >
+                  <button
+                    className="review-row"
+                    disabled={busy}
+                    onClick={() =>
+                      setExpandedBillId(expanded ? null : bill.id)
+                    }
+                  >
+                    <span className="review-table">
+                      Mesa {String(bill.table_number).padStart(2, '0')}
+                    </span>
+                    <span className="review-meta">
+                      Fechada em {formatDateTime(bill.closed_at)} ·{' '}
+                      {itemCount} {itemCount === 1 ? 'item' : 'itens'}
+                    </span>
+                    <span className="review-total">
+                      {brl(bill.total_cents)}
+                    </span>
+                  </button>
+                  {expanded && detail && (
+                    <div className="review-detail">
+                      {detail.items.map((item) => {
+                        const station =
+                          products.find((p) => p.id === item.product_id)
+                            ?.prints_in === 'bar'
+                            ? 'bar'
+                            : 'kitchen';
+                        return (
+                          <div key={item.id} className="item-row">
+                            <div className="top">
+                              <span className="iname">
+                                {item.qty}× {item.product_name}
+                              </span>
+                              <span className="iline">
+                                {brl(item.price_cents * item.qty)}
+                              </span>
+                            </div>
+                            {item.serve && (
+                              <div className="serve-line">{item.serve}</div>
+                            )}
+                            <div className="item-meta">
+                              <span>
+                                {brl(item.price_cents)} cada
+                                {item.note ? ` · obs: ${item.note}` : ''}
+                              </span>
+                              <span
+                                className={`station-badge ${
+                                  station === 'bar' ? 'bar' : 'kitchen'
+                                }`}
+                              >
+                                {station === 'bar' ? 'Bar' : 'Cozinha'}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <div className="totals">
+                        <div className="trow">
+                          <span>Subtotal</span>
+                          <span>{brl(bill.subtotal_cents)}</span>
+                        </div>
+                        <div className="trow">
+                          <span>Taxa de serviço</span>
+                          <span>{brl(bill.fee_cents)}</span>
+                        </div>
+                        <div className="trow total">
+                          <span>Total da mesa</span>
+                          <span>{brl(bill.total_cents)}</span>
+                        </div>
+                      </div>
+                      <p className="hint">
+                        Aberta às {formatTime(detail.openedAt)} · fechada às{' '}
+                        {formatTime(bill.closed_at)}
+                      </p>
+                      <button
+                        className="btn btn-purple"
+                        onClick={() => {
+                          const { kitchen, bar } = splitTickets(detail.items);
+                          setViewTicket({
+                            kind: 'close',
+                            tableNumber: bill.table_number,
+                            kitchen,
+                            bar,
+                            bill,
+                            orderNumber: billNumbers[bill.id],
+                            sentAt: bill.closed_at,
+                            waiterName: bill.waiter_name,
+                          });
+                        }}
+                      >
+                        Ver via do balcão
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
         {tickets && (
           <TicketsModal
             data={tickets}
             products={products}
             restaurantName={restaurant?.name ?? 'Restaurante'}
+            title="Conta fechada — via do balcão"
+            closeLabel="Ver revisão da mesa"
             onClose={() => setTickets(null)}
+          />
+        )}
+        {viewTicket && (
+          <TicketsModal
+            data={viewTicket}
+            products={products}
+            restaurantName={restaurant?.name ?? 'Restaurante'}
+            title="Via do balcão — conta fechada"
+            closeLabel="Fechar"
+            onClose={() => setViewTicket(null)}
           />
         )}
       </div>
@@ -1896,13 +2215,13 @@ function LoginForm({
   return (
     <div className="card">
       <div className="field">
-        <label htmlFor="login">Login</label>
+        <label htmlFor="login">Usuário</label>
         <input
           id="login"
           autoComplete="username"
           value={login}
           onChange={(e) => setLogin(e.target.value)}
-          placeholder="Seu login"
+          placeholder="Seu usuário"
         />
       </div>
       <div className="field">
@@ -1924,7 +2243,7 @@ function LoginForm({
         disabled={busy || !login.trim() || !password}
         onClick={() => onLogin(login, password)}
       >
-        Entrar
+        {busy ? 'Entrando…' : 'Entrar'}
       </button>
     </div>
   );
@@ -2119,11 +2438,7 @@ function ProductForm({
       return;
     }
     if (cents === null) {
-      setError('Informe um preço válido. Ex.: 32,90');
-      return;
-    }
-    if (!category.trim()) {
-      setError('Informe a categoria. Ex.: Almoço, Bebidas.');
+      setError('Preço inválido. Use o formato 32,90.');
       return;
     }
     setBusy(true);
@@ -2131,7 +2446,7 @@ function ProductForm({
       const input = {
         name: name.trim(),
         price_cents: cents,
-        category: category.trim(),
+        category: category.trim() || 'Geral',
         prints_in: printsIn,
         drink_type: printsIn === 'bar' ? drinkType : undefined,
         description:
@@ -2183,7 +2498,7 @@ function ProductForm({
           />
         </div>
         <div className="field">
-          <label htmlFor="prod-cat">Categoria</label>
+          <label htmlFor="prod-cat">Categoria (botão na tela de pedido)</label>
           <input
             id="prod-cat"
             list="cat-suggestions"
@@ -2238,13 +2553,14 @@ function ProductForm({
       )}
       {printsIn === 'kitchen' && (
         <div className="field">
-          <label htmlFor="prod-desc">O que vem no prato (opcional)</label>
+          <label htmlFor="prod-desc">O que vem no prato</label>
           <input
             id="prod-desc"
             value={description}
             disabled={disabled}
+            maxLength={300}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Ex.: arroz, feijão, batata frita"
+            placeholder="Ex.: arroz, feijão, 300g de filé de tilápia"
           />
         </div>
       )}
@@ -2255,11 +2571,11 @@ function ProductForm({
       >
         {editing ? 'Salvar alterações' : 'Adicionar ao cardápio'}
       </button>
-      {editing && onCancelEdit && (
+      {onCancelEdit && (
         <>
           <div style={{ height: 10 }} />
           <button className="btn btn-ghost" onClick={onCancelEdit}>
-            Cancelar edição
+            Cancelar
           </button>
         </>
       )}
@@ -2272,13 +2588,20 @@ function ProductListGrouped({
   onDeleted,
   readOnly,
   onEdit,
+  pausedIds,
+  onTogglePause,
 }: {
   products: Product[];
   onDeleted: () => Promise<void>;
   readOnly?: boolean;
   /** editar (só na área do dono) — quando ausente, não mostra o botão */
   onEdit?: (p: Product) => void;
+  /** produtos pausados (não aparecem na tela de pedir) */
+  pausedIds?: Set<string>;
+  /** pausar/reativar (só na área do dono) */
+  onTogglePause?: (id: string) => void;
 }) {
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const groups = new Map<string, Product[]>();
   for (const p of products) {
     const list = groups.get(p.category) ?? [];
@@ -2292,31 +2615,71 @@ function ProductListGrouped({
         .map(([cat, items]) => (
           <div key={cat} className="prod-list-group">
             <h4>{cat}</h4>
-            {items.map((p) => (
-              <div key={p.id} className="prod-list-item">
-                <span>
-                  {p.name} · {brl(p.price_cents)}{' '}
-                  <span className="where">
-                    ({p.prints_in === 'kitchen' ? 'Cozinha' : 'Bar'})
-                  </span>
-                </span>
-                {!readOnly && (
-                  <>
-                    {onEdit && (
-                      <button onClick={() => onEdit(p)}>Editar</button>
+            {items.map((p) => {
+              const paused = pausedIds?.has(p.id) ?? false;
+              return (
+                <div key={p.id}>
+                  <div
+                    className="prod-list-item"
+                    style={paused ? { opacity: 0.6 } : undefined}
+                  >
+                    <span>
+                      {p.name}{' '}
+                      <span className="where">
+                        {p.category} ·{' '}
+                        {p.prints_in === 'kitchen' ? 'Cozinha' : 'Bar'}
+                        {paused ? ' · pausado' : ''}
+                      </span>
+                    </span>
+                    <span className="prod-list-price">{brl(p.price_cents)}</span>
+                    {!readOnly && (
+                      <span className="prod-list-actions">
+                        {onEdit && (
+                          <button onClick={() => onEdit(p)}>Editar</button>
+                        )}
+                        {onTogglePause && (
+                          <button onClick={() => onTogglePause(p.id)}>
+                            {paused ? 'Reativar' : 'Pausar'}
+                          </button>
+                        )}
+                        <button
+                          className="danger"
+                          onClick={() => setConfirmDelete(p.id)}
+                        >
+                          Remover
+                        </button>
+                      </span>
                     )}
-                    <button
-                      onClick={async () => {
-                        await store.deleteProduct(p.id);
-                        await onDeleted();
-                      }}
-                    >
-                      Remover
-                    </button>
-                  </>
-                )}
-              </div>
-            ))}
+                  </div>
+                  {confirmDelete === p.id && (
+                    <div className="confirm-box">
+                      <p>
+                        Remover {p.name} do cardápio? Ele some da tela de
+                        pedido do garçom. Contas já fechadas não mudam.
+                      </p>
+                      <div className="confirm-actions">
+                        <button
+                          className="btn btn-ghost btn-auto"
+                          onClick={() => setConfirmDelete(null)}
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          className="btn btn-danger btn-auto"
+                          onClick={async () => {
+                            setConfirmDelete(null);
+                            await store.deleteProduct(p.id);
+                            await onDeleted();
+                          }}
+                        >
+                          Remover mesmo
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         ))}
     </div>
@@ -2352,15 +2715,18 @@ function ProductCard({
 
 function ItemRow({
   item,
+  station,
   onQty,
   onRemove,
   onNote,
 }: {
   item: OrderItem;
+  station: 'kitchen' | 'bar';
   onQty: (delta: number) => void;
   onRemove: () => void;
   onNote: (note: string) => void;
 }) {
+  const [editingNote, setEditingNote] = useState(false);
   const [draft, setDraft] = useState(item.note);
   return (
     <div className="item-row">
@@ -2368,14 +2734,45 @@ function ItemRow({
         <span className="iname">{item.product_name}</span>
         <span className="iline">{brl(item.price_cents * item.qty)}</span>
       </div>
-      {item.serve && <div className="note-line">{item.serve}</div>}
-      <input
-        className="note-input"
-        value={draft}
-        placeholder="observações"
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => onNote(draft.trim())}
-      />
+      {item.serve && <div className="serve-line">{item.serve}</div>}
+      <div className="item-meta">
+        <span>{brl(item.price_cents)} cada</span>
+        <span
+          className={`station-badge ${station === 'bar' ? 'bar' : 'kitchen'}`}
+        >
+          {station === 'bar' ? 'Bar' : 'Cozinha'}
+        </span>
+      </div>
+      {editingNote ? (
+        <div className="note-edit">
+          <input
+            className="note-input"
+            value={draft}
+            placeholder="observações"
+            onChange={(e) => setDraft(e.target.value)}
+            autoFocus
+          />
+          <button
+            className="btn btn-green note-save"
+            onClick={() => {
+              onNote(draft.trim());
+              setEditingNote(false);
+            }}
+          >
+            Salvar
+          </button>
+        </div>
+      ) : (
+        <button
+          className="note-link"
+          onClick={() => {
+            setDraft(item.note);
+            setEditingNote(true);
+          }}
+        >
+          {item.note ? `obs: ${item.note} (editar)` : 'observações'}
+        </button>
+      )}
       <div className="stepper">
         <button onClick={() => onQty(-1)} aria-label="Diminuir">
           −
@@ -2393,40 +2790,6 @@ function ItemRow({
 }
 
 /* ------------------------------------------------------------------ */
-/* Modal de confirmação                                                */
-/* ------------------------------------------------------------------ */
-
-function ConfirmModal({
-  title,
-  text,
-  confirmLabel,
-  onConfirm,
-  onCancel,
-}: {
-  title: string;
-  text: string;
-  confirmLabel: string;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <div className="modal-backdrop">
-      <div className="modal">
-        <h3 style={{ marginTop: 0 }}>{title}</h3>
-        <p className="hint">{text}</p>
-        <button className="btn btn-green" onClick={onConfirm}>
-          {confirmLabel}
-        </button>
-        <div style={{ height: 10 }} />
-        <button className="btn btn-ghost" onClick={onCancel}>
-          Cancelar
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
 /* Vias de papel (cozinha / bar / balcão)                              */
 /* ------------------------------------------------------------------ */
 
@@ -2434,30 +2797,37 @@ function TicketsModal({
   data,
   products,
   restaurantName,
+  title,
+  closeLabel,
   onClose,
 }: {
   data: TicketData;
   products: Product[];
   /** nome do restaurante no cabeçalho das vias */
   restaurantName: string;
+  title?: string;
+  closeLabel?: string;
   onClose: () => void;
 }) {
+  const orderNo = data.orderNumber
+    ? String(data.orderNumber).padStart(4, '0')
+    : '—';
+  /** observações juntas numa só caixa cinza (vias da cozinha e do bar) */
+  const notesOf = (items: OrderItem[]) =>
+    items
+      .filter((i) => i.note)
+      .map((i) => `${i.qty}× ${i.product_name}: ${i.note}`);
+  const kitchenNotes = notesOf(data.kitchen);
+  const barNotes = notesOf(data.bar);
   return (
     <div className="modal-backdrop">
       <div className="modal">
-        {data.kind === 'send' ? (
-          <>
-            <h3 style={{ marginTop: 0 }}>Pedido enviado</h3>
-            <p className="hint">
-              As vias abaixo são o que sairia em cada impressora.
-            </p>
-          </>
-        ) : (
-          <>
-            <h3 style={{ marginTop: 0 }}>Conta fechada — Mesa {data.tableNumber}</h3>
-            <p className="hint">Via do balcão com os valores finais.</p>
-          </>
-        )}
+        <h3 style={{ marginTop: 0 }}>
+          {title ??
+            (data.kind === 'send'
+              ? 'Pedido enviado — vias impressas'
+              : 'Conta fechada — via do balcão')}
+        </h3>
 
         {data.kind === 'send' && data.kitchen.length > 0 && (
           <div className="ticket">
@@ -2468,9 +2838,7 @@ function TicketsModal({
               <span className="t-name">{restaurantName}</span>
               <span className="t-num">
                 Pedido Nº
-                <strong>
-                  {String(data.orderNumber ?? 0).padStart(4, '0')}
-                </strong>
+                <strong>{orderNo}</strong>
               </span>
             </div>
             <div className="t-meta">
@@ -2495,17 +2863,20 @@ function TicketsModal({
                     <span>{i.product_name}</span>
                   </div>
                   {desc && <div className="t-detail">{desc}</div>}
-                  {i.note && (
-                    <div className="t-obs">
-                      <strong>Observações:</strong> {i.note}
-                    </div>
-                  )}
                 </div>
               );
             })}
+            {kitchenNotes.length > 0 && (
+              <div className="t-obs">
+                <strong>Observações:</strong>
+                {kitchenNotes.map((n) => (
+                  <div key={n}>{n}</div>
+                ))}
+              </div>
+            )}
             <hr />
             <div className="t-foot">
-              ✓ Pedido em preparo!
+              Pedido em preparo!
               <span>Qualquer dúvida, chame o garçom.</span>
             </div>
           </div>
@@ -2515,14 +2886,12 @@ function TicketsModal({
           <div className="ticket">
             <div className="t-head">
               <span className="t-logo" aria-hidden>
-                👨‍🍳
+                🥤
               </span>
               <span className="t-name">{restaurantName}</span>
               <span className="t-num">
                 Pedido Nº
-                <strong>
-                  {String(data.orderNumber ?? 0).padStart(4, '0')}
-                </strong>
+                <strong>{orderNo}</strong>
               </span>
             </div>
             <div className="t-meta">
@@ -2543,16 +2912,19 @@ function TicketsModal({
                   <span>{i.product_name}</span>
                 </div>
                 {i.serve && <div className="t-detail">{i.serve}</div>}
-                {i.note && (
-                  <div className="t-obs">
-                    <strong>Observações:</strong> {i.note}
-                  </div>
-                )}
               </div>
             ))}
+            {barNotes.length > 0 && (
+              <div className="t-obs">
+                <strong>Observações:</strong>
+                {barNotes.map((n) => (
+                  <div key={n}>{n}</div>
+                ))}
+              </div>
+            )}
             <hr />
             <div className="t-foot">
-              ✓ Pedido em preparo!
+              Pedido em preparo!
               <span>Qualquer dúvida, chame o garçom.</span>
             </div>
           </div>
@@ -2567,9 +2939,7 @@ function TicketsModal({
               <span className="t-name">{restaurantName}</span>
               <span className="t-num">
                 Pedido Nº
-                <strong>
-                  {String(data.orderNumber ?? 0).padStart(4, '0')}
-                </strong>
+                <strong>{orderNo}</strong>
               </span>
             </div>
             <div className="t-meta">
@@ -2594,11 +2964,7 @@ function TicketsModal({
                   </span>
                 </div>
                 {i.serve && <div className="t-detail">{i.serve}</div>}
-                {i.note && (
-                  <div className="t-obs">
-                    <strong>Observações:</strong> {i.note}
-                  </div>
-                )}
+                {i.note && <div className="t-detail">obs: {i.note}</div>}
               </div>
             ))}
             <hr />
@@ -2611,7 +2977,7 @@ function TicketsModal({
               <span>{brl(data.bill.fee_cents)}</span>
             </div>
             <div className="t-line t-total">
-              <span>Total</span>
+              <span>TOTAL</span>
               <span>{brl(data.bill.total_cents)}</span>
             </div>
             <hr />
@@ -2620,7 +2986,10 @@ function TicketsModal({
         )}
 
         <button className="btn btn-purple" onClick={onClose}>
-          OK
+          {closeLabel ??
+            (data.kind === 'close'
+              ? 'Ver revisão da mesa'
+              : 'OK, voltar à mesa')}
         </button>
       </div>
     </div>
@@ -2659,8 +3028,8 @@ function SettingsView({
       setError('Informe uma taxa de serviço entre 0 e 100.');
       return;
     }
-    if (!Number.isInteger(count) || count < 1 || count > 100) {
-      setError('Informe o número de mesas (1 a 100).');
+    if (!Number.isInteger(count) || count < 1 || count > 60) {
+      setError('Número de mesas inválido (de 1 a 60).');
       return;
     }
     setBusy(true);
@@ -2771,7 +3140,10 @@ function filterBills(bills: ClosedBill[], period: Period): ClosedBill[] {
 }
 
 /** Acesso do dono: login na área financeira. O dono novo se cadastra
- * em "Cadastrar meu restaurante", na tela de login. */
+ * em "Cadastrar meu restaurante", na tela de login. Primeiro acesso
+ * do restaurante original (sem dono ainda): cria o acesso com
+ * "Seu nome" e o botão "Criar acesso e entrar". Vindo da tela de
+ * sucesso, o usuário já vem preenchido e NÃO cai no primeiro acesso. */
 function OwnerAuthView({
   busy,
   onLogin,
@@ -2784,25 +3156,96 @@ function OwnerAuthView({
   /** login já preenchido (vem da tela de "Cadastro realizado com sucesso") */
   initialLogin?: string;
 }) {
+  const [name, setName] = useState('');
   const [login, setLogin] = useState(initialLogin);
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  /** null = conferindo se já existe dono; true = primeiro acesso */
+  const [firstAccess, setFirstAccess] = useState<boolean | null>(
+    initialLogin ? false : null,
+  );
+
+  useEffect(() => {
+    if (initialLogin) return;
+    let alive = true;
+    (async () => {
+      try {
+        // Primeiro acesso só vale com restaurante ativo e sem dono:
+        // sem restaurante, o caminho é "Cadastrar meu restaurante".
+        if (!store.getActiveRestaurantId()) {
+          if (alive) setFirstAccess(false);
+          return;
+        }
+        const owner = await store.getOwner();
+        if (alive) setFirstAccess(owner === null);
+      } catch {
+        // Sem restaurante ativo não dá pra conferir: mostra o login.
+        if (alive) setFirstAccess(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [initialLogin]);
 
   function submit() {
+    if (firstAccess && !name.trim()) {
+      setError('Preencha o seu nome.');
+      return;
+    }
     if (!login.trim() || !password) {
       setError('Preencha o usuário e a senha.');
+      return;
+    }
+    if (firstAccess && password.length < 4) {
+      setError('A senha precisa ter no mínimo 4 caracteres.');
       return;
     }
     onLogin(login, password);
   }
 
+  async function createAccess() {
+    setError('');
+    if (!name.trim() || !login.trim()) {
+      setError('Preencha o seu nome e o usuário.');
+      return;
+    }
+    if (password.length < 4) {
+      setError('A senha precisa ter no mínimo 4 caracteres.');
+      return;
+    }
+    try {
+      const hash = await store.hashPassword(password);
+      await store.createOwner(name.trim(), login.trim(), hash);
+      onLogin(login.trim(), password);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Não foi possível criar o acesso.');
+    }
+  }
+
   return (
     <div className="card">
-      <h2>Área do dono</h2>
-      <p className="hint">Entre com o seu usuário para ver o financeiro.</p>
+      <div className="eyebrow">Restaurante</div>
+      <h2>Acesso do dono</h2>
+      <p className="hint">
+        {firstAccess
+          ? 'Primeiro acesso do restaurante: crie o seu acesso de dono pra abrir a área financeira.'
+          : 'Entre com seu usuário e senha pra abrir a área financeira do seu restaurante.'}
+      </p>
       {error && <div className="error">{error}</div>}
+      {firstAccess && (
+        <div className="field">
+          <label htmlFor="owner-name">Seu nome</label>
+          <input
+            id="owner-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Ex.: Luis"
+          />
+        </div>
+      )}
       <div className="field">
-        <label htmlFor="owner-login">Usuário (só você sabe)</label>
+        <label htmlFor="owner-login">Usuário</label>
         <input
           id="owner-login"
           autoComplete="username"
@@ -2825,9 +3268,19 @@ function OwnerAuthView({
           }}
         />
       </div>
-      <button className="btn btn-purple" disabled={busy} onClick={submit}>
-        Entrar no financeiro
-      </button>
+      {firstAccess ? (
+        <button
+          className="btn btn-purple"
+          disabled={busy}
+          onClick={() => void createAccess()}
+        >
+          Criar acesso e entrar
+        </button>
+      ) : (
+        <button className="btn btn-purple" disabled={busy} onClick={submit}>
+          {busy ? 'Entrando…' : 'Entrar no financeiro'}
+        </button>
+      )}
       <div style={{ height: 10 }} />
       <button className="btn btn-ghost" onClick={onCancel}>
         Voltar ao login do garçom
@@ -2874,10 +3327,10 @@ function RegisterRestaurantView({
 
   return (
     <div className="card">
-      <h2>Seu restaurante</h2>
+      <div className="eyebrow">NOVO RESTAURANTE</div>
+      <h2>Cadastrar meu restaurante</h2>
       <p className="hint">
-        O login do dono é único na plataforma toda — se já existir um
-        acesso com esse usuário, escolha outro.
+        Por enquanto o acesso é liberado no cadastro, sem pagamento.
       </p>
       {error && <div className="error">{error}</div>}
       <div className="field">
@@ -2890,7 +3343,7 @@ function RegisterRestaurantView({
         />
       </div>
       <div className="field">
-        <label htmlFor="reg-name">Seu nome</label>
+        <label htmlFor="reg-name">Seu nome (dono)</label>
         <input
           id="reg-name"
           value={name}
@@ -2899,7 +3352,7 @@ function RegisterRestaurantView({
         />
       </div>
       <div className="field">
-        <label htmlFor="reg-login">Usuário (só você sabe)</label>
+        <label htmlFor="reg-login">Usuário (seu login de dono)</label>
         <input
           id="reg-login"
           autoComplete="username"
@@ -2907,9 +3360,13 @@ function RegisterRestaurantView({
           onChange={(e) => setLogin(e.target.value)}
           placeholder="Seu usuário"
         />
+        <p className="hint" style={{ marginTop: 6, marginBottom: 0 }}>
+          O login do dono é único na plataforma toda — se já existir um
+          acesso com esse usuário, escolha outro.
+        </p>
       </div>
       <div className="field">
-        <label htmlFor="reg-password">Senha</label>
+        <label htmlFor="reg-password">Senha (mínimo 4 caracteres)</label>
         <input
           id="reg-password"
           type="password"
@@ -3091,46 +3548,47 @@ function PlatformAdminView({ onLogout }: { onLogout: () => void }) {
   );
 }
 
-type OwnerTab = 'dashboard' | 'waiters' | 'menu' | 'settings' | 'qr';
+type OwnerTab = 'dashboard' | 'waiters' | 'menu' | 'settings';
 
-/** Cabeçalho da área do dono + abas (Dashboard, Garçons, Cardápio, Ajustes). */
+/** Cabeçalho da área do dono: "Financeiro" + restaurante e "Olá,
+ * <primeiro nome>", botão Sair; abaixo, o "Menu do dono" em grade
+ * de 4 colunas: Início, Garçons, Cardápio, Ajustes. Aba ativa roxa
+ * com texto branco; inativa branca com texto escuro. */
 function OwnerHeader({
-  title,
-  sub,
   tab,
   restaurantName,
+  ownerName,
   onNavigate,
   onLogout,
 }: {
-  title: string;
-  sub?: string;
   tab: OwnerTab;
   restaurantName?: string;
+  ownerName?: string;
   onNavigate: (v: View) => void;
   onLogout: () => void;
 }) {
+  const firstName = (ownerName ?? '').split(' ')[0];
   return (
     <>
-      <header className="header">
+      <header className="owner-header">
         <div>
-          <h1>{title}</h1>
-          {sub && (
-            <div className="sub">
-              {sub}
-              {restaurantName ? ` · ${restaurantName}` : ''}
-            </div>
-          )}
+          <h1>Financeiro</h1>
+          <div className="owner-sub">
+            {restaurantName ? `${restaurantName} · ` : ''}
+            {firstName ? `Olá, ${firstName}` : ''}
+          </div>
         </div>
-        <button className="icon-btn" onClick={onLogout}>
+        <button className="owner-logout" onClick={onLogout}>
           Sair
         </button>
       </header>
-      <div className="owner-tabs">
+      <div className="owner-nav-label">Menu do dono</div>
+      <nav className="owner-tabs">
         <button
           className={tab === 'dashboard' ? 'on' : ''}
           onClick={() => onNavigate('owner')}
         >
-          Dashboard
+          Início
         </button>
         <button
           className={tab === 'waiters' ? 'on' : ''}
@@ -3150,13 +3608,7 @@ function OwnerHeader({
         >
           Ajustes
         </button>
-        <button
-          className={tab === 'qr' ? 'on' : ''}
-          onClick={() => onNavigate('owner-qr')}
-        >
-          QR Code
-        </button>
-      </div>
+      </nav>
     </>
   );
 }
@@ -3166,7 +3618,7 @@ function OwnerHeader({
 /** Primeira tela do sistema: explica como funciona, mostra os planos
  * e o cadastro. Só tem o botão "Cadastrar meu restaurante" — quem já
  * tem conta entra pelo link pequeno e discreto no rodapé ("Já tem uma
- * conta? Entrar"). O QR Code dos garçons (?tela=garcom) não passa
+ * conta? Entrar"). O QR Code dos garçons (?acesso=garcom) não passa
  * por aqui: vai direto pro login do garçom. */
 function HomeView({
   onLogin,
@@ -3209,6 +3661,34 @@ function HomeView({
     (calcVendaCents * calcPctNum) / 100,
   );
   const calcRestauranteCents = calcVendaCents - calcComissaoCents;
+  // Dúvidas frequentes em sanfona: fechada por padrão.
+  const [openFaq, setOpenFaq] = useState<number | null>(null);
+  const faqs = [
+    {
+      q: 'Preciso instalar algum aplicativo?',
+      a: 'Não. O sistema abre no navegador do celular, sem instalar nada — é só abrir o endereço e entrar.',
+    },
+    {
+      q: 'Quem cadastra o cardápio e os garçons?',
+      a: 'Só o dono, na área dele. O garçom só recebe o login e a senha pra entrar nas mesas.',
+    },
+    {
+      q: 'Preciso de impressoras especiais?',
+      a: 'As vias saem nas impressoras térmicas da cozinha, do bar e do balcão — cada via sai só onde ela pertence.',
+    },
+    {
+      q: 'Outro restaurante consegue ver minhas vendas?',
+      a: 'Não. Cada restaurante vê só os dados dele — garçons, cardápio, mesas e financeiro separados.',
+    },
+    {
+      q: 'Quanto custa?',
+      a: '3 dias grátis. Depois, R$ 69,99 por mês ou R$ 499,99 por ano — os dois com suporte 24 horas.',
+    },
+    {
+      q: 'E se o cliente pedir mais depois de fechar a conta?',
+      a: 'O garçom reabre a mesma mesa e continua o pedido normal.',
+    },
+  ];
   useEffect(() => {
     const inBand = (el: HTMLDivElement | null) => {
       if (!el) return false;
@@ -3230,6 +3710,13 @@ function HomeView({
     <div className="app landing">
       <div className="landing-header">
         <strong>Sistema de Restaurante</strong>
+        <nav className="landing-nav" aria-label="Menu">
+          <a href="#como-funciona">Como funciona</a>
+          <a href="#pro-garcom">Pro garçom</a>
+          <a href="#pro-dono">Pro dono</a>
+          <a href="#planos">Planos</a>
+          <a href="#duvidas">Dúvidas</a>
+        </nav>
         <button
           className="btn btn-orange landing-header-cta"
           onClick={onRegister}
@@ -3269,19 +3756,39 @@ function HomeView({
               Ver como funciona
             </button>
           </div>
+          <div className="landing-checks">
+            <span>✓ Sem instalar nada</span>
+            <span>✓ 3 dias grátis</span>
+            <span>✓ Suporte 24 horas</span>
+            <span>✓ Dados separados</span>
+          </div>
           <div className="landing-phone" aria-hidden>
             <div className="landing-phone-screen">
               <div className="landing-phone-head">Mesas</div>
               <div className="landing-phone-search">
                 Digite o nº da mesa...
               </div>
+              <div className="landing-phone-label">
+                Pedidos em andamento (3)
+              </div>
               <div className="landing-phone-grid">
-                <span className="lp-green">01</span>
-                <span className="lp-green">02</span>
-                <span className="lp-orange">03 🔒</span>
+                <span className="lp-green">
+                  01<small>Carlos</small>
+                </span>
+                <span className="lp-green">
+                  03<small>Ana</small>
+                </span>
+                <span className="lp-green">
+                  07<small>Carlos</small>
+                </span>
+                <span className="lp-amber">08 🔒</span>
+              </div>
+              <div className="landing-phone-label">Mesas livres (4)</div>
+              <div className="landing-phone-grid">
+                <span className="lp-gray">ABRIR 02</span>
                 <span className="lp-gray">ABRIR 04</span>
                 <span className="lp-gray">ABRIR 05</span>
-                <span className="lp-green">06</span>
+                <span className="lp-gray">ABRIR 06</span>
               </div>
             </div>
           </div>
@@ -3292,37 +3799,66 @@ function HomeView({
         </div>
         <div className="steps">
           <div className="step">
-            <strong>1 · O garçom anota o pedido no celular</strong>
+            <strong>1 · Cadastre o restaurante</strong>
             <span>
-              Mesas numeradas, busca do produto, só quem abriu a mesa mexe
-              nela.
+              Crie o restaurante e o seu acesso de dono em poucos minutos,
+              sem instalar nada.
             </span>
           </div>
           <div className="step">
-            <strong>2 · O pedido vai direto pra cozinha e pro bar</strong>
+            <strong>2 · Monte a equipe e o cardápio</strong>
             <span>
-              Prato imprime na cozinha sem valor; bebida imprime no bar com
-              o jeito de servir.
+              Cadastre os garçons e os produtos, com preço e onde cada um
+              imprime: cozinha ou bar.
             </span>
           </div>
           <div className="step">
-            <strong>3 · Ao fechar a mesa, a conta vai pro balcão</strong>
+            <strong>3 · O garçom atende pelo celular</strong>
             <span>
-              A venda cai sozinha no financeiro, com a comissão do garçom
-              já calculada.
+              Ele abre a mesa, anota o pedido e envia pra cozinha e pro
+              bar na hora.
             </span>
           </div>
           <div className="step">
-            <strong>4 · O dono acompanha tudo</strong>
+            <strong>4 · A venda cai no financeiro</strong>
             <span>
-              Vendas por garçom, comissão de cada um e botão de finalizar o
-              dia (o dia reabre sozinho às 9h).
+              Ao fechar a mesa, a conta vai pro financeiro com a comissão
+              do garçom já calculada.
             </span>
           </div>
         </div>
 
-        <div className="section-title">
-          As vias da cozinha, do bar e do balcão
+        <div className="section-title" id="pro-garcom">
+          No celular do garçom
+        </div>
+        <div className="steps">
+          <div className="step">
+            <strong>Grade de mesas</strong>
+            <span>
+              Mesas numeradas com o estado ao vivo: livres, suas e de
+              outros garçons.
+            </span>
+          </div>
+          <div className="step">
+            <strong>Mesa de quem abriu</strong>
+            <span>
+              Só quem abriu a mesa mexe nela — os outros veem de quem ela
+              é.
+            </span>
+          </div>
+          <div className="step">
+            <strong>Busca</strong>
+            <span>
+              Acha o produto na hora, por nome ou categoria.
+            </span>
+          </div>
+          <div className="step">
+            <strong>Bebida do jeito do cliente</strong>
+            <span>
+              Refrigerante com limão e gelo, cerveja com copos, torre com
+              canecas.
+            </span>
+          </div>
         </div>
         <p className="hint">
           O pedido sai impresso na hora, cada um no seu lugar. Na cozinha
@@ -3336,11 +3872,11 @@ function HomeView({
               </span>
               <span className="t-name">Gosto Caseiro</span>
               <span className="t-num">
-                Pedido Nº<strong>0001</strong>
+                Pedido Nº<strong>0042</strong>
               </span>
             </div>
             <div className="t-meta">
-              Mesa: 3 | Hora: 19:32 | Garçom: Carlos
+              Mesa: 07 | Hora: 20:14 | Garçom: Carlos
             </div>
             <div className="t-band">👨‍🍳&nbsp; COZINHA</div>
             <div className="t-cols">
@@ -3355,9 +3891,16 @@ function HomeView({
             <div className="t-detail">
               arroz branco, salada verde, batata frita
             </div>
+            <div className="t-row">
+              <span className="t-qty">1×</span>
+              <span>Prato da casa</span>
+            </div>
+            <div className="t-detail">
+              arroz, feijão, 300g de filé de tilápia
+            </div>
             <hr />
             <div className="t-foot">
-              ✓ Pedido em preparo!
+              Pedido em preparo!
               <span>Qualquer dúvida, chame o garçom.</span>
             </div>
           </div>
@@ -3369,11 +3912,11 @@ function HomeView({
               </span>
               <span className="t-name">Gosto Caseiro</span>
               <span className="t-num">
-                Pedido Nº<strong>0001</strong>
+                Pedido Nº<strong>0042</strong>
               </span>
             </div>
             <div className="t-meta">
-              Mesa: 3 | Hora: 19:32 | Garçom: Carlos
+              Mesa: 07 | Hora: 20:14 | Garçom: Carlos
             </div>
             <div className="t-band">🥤&nbsp; BAR</div>
             <div className="t-cols">
@@ -3382,13 +3925,13 @@ function HomeView({
             </div>
             <hr />
             <div className="t-row">
-              <span className="t-qty">1×</span>
+              <span className="t-qty">2×</span>
               <span>Coca 600ml</span>
             </div>
             <div className="t-detail">copo com limão e gelo</div>
             <hr />
             <div className="t-foot">
-              ✓ Pedido em preparo!
+              Pedido em preparo!
               <span>Qualquer dúvida, chame o garçom.</span>
             </div>
           </div>
@@ -3400,11 +3943,11 @@ function HomeView({
               </span>
               <span className="t-name">Gosto Caseiro</span>
               <span className="t-num">
-                Pedido Nº<strong>0001</strong>
+                Pedido Nº<strong>0042</strong>
               </span>
             </div>
             <div className="t-meta">
-              Mesa: 3 | Hora: 19:32 | Garçom: Carlos
+              Mesa: 07 | Hora: 20:14 | Garçom: Carlos
             </div>
             <div className="t-band">🧾&nbsp; CONTA</div>
             <div className="t-cols">
@@ -3416,32 +3959,39 @@ function HomeView({
             <div className="t-row">
               <span className="t-qty">1×</span>
               <span className="t-item">Filé de Frango</span>
-              <span className="t-price">R$ 28,90</span>
+              <span className="t-price">R$ 89,00</span>
             </div>
             <div className="t-row">
               <span className="t-qty">1×</span>
+              <span className="t-item">Prato da casa</span>
+              <span className="t-price">R$ 81,00</span>
+            </div>
+            <div className="t-row">
+              <span className="t-qty">2×</span>
               <span className="t-item">Coca 600ml</span>
-              <span className="t-price">R$ 8,99</span>
+              <span className="t-price">R$ 18,00</span>
             </div>
             <hr />
             <div className="t-line">
               <span>Subtotal</span>
-              <span>R$ 37,89</span>
+              <span>R$ 188,00</span>
             </div>
             <div className="t-line">
               <span>Taxa de serviço</span>
-              <span>R$ 1,14</span>
+              <span>R$ 5,64</span>
             </div>
             <div className="t-line t-total">
-              <span>Total</span>
-              <span>R$ 39,03</span>
+              <span>TOTAL</span>
+              <span>R$ 193,64</span>
             </div>
             <hr />
             <div className="t-foot">Obrigado pela preferência!</div>
           </div>
         </div>
 
-        <div className="section-title">O financeiro do dono</div>
+        <div className="section-title" id="pro-dono">
+          No painel do dono
+        </div>
         <div className="steps">
           <div className="step">
             <strong>Vendas por garçom</strong>
@@ -3451,17 +4001,23 @@ function HomeView({
             </span>
           </div>
           <div className="step">
-            <strong>Comissão calculada sozinha</strong>
+            <strong>Comissão automática</strong>
             <span>
               Exemplo: vendeu R$ 200,00 a 8% — R$ 16,00 é do garçom e
               R$ 184,00 fica pro restaurante.
             </span>
           </div>
           <div className="step">
-            <strong>Botão de finalizar o dia</strong>
+            <strong>Finalizar o dia</strong>
             <span>
               Fecha o dia com o resumo pra pagar os garçons. No dia
               seguinte, abre sozinho às 9h.
+            </span>
+          </div>
+          <div className="step">
+            <strong>Preço e cardápio do dono</strong>
+            <span>
+              Só o dono muda preços, cardápio, taxa de serviço e comissão.
             </span>
           </div>
         </div>
@@ -3503,48 +4059,62 @@ function HomeView({
           </div>
         </div>
 
-        <div className="section-title">Planos</div>
+        <div className="section-title" id="duvidas">
+          Dúvidas frequentes
+        </div>
+        <div className="faq-list">
+          {faqs.map((f, i) => (
+            <div key={f.q} className="faq-item">
+              <button
+                className="faq-q"
+                onClick={() => setOpenFaq(openFaq === i ? null : i)}
+                aria-expanded={openFaq === i}
+              >
+                <span>{f.q}</span>
+                <span aria-hidden>{openFaq === i ? '−' : '+'}</span>
+              </button>
+              {openFaq === i && <p className="faq-a">{f.a}</p>}
+            </div>
+          ))}
+        </div>
+
+        <div className="section-title" id="planos">
+          Planos
+        </div>
         <p className="hint">
           Cadastre seu restaurante e use <strong>3 dias grátis</strong>.
           Depois, escolha o plano:
         </p>
+        <div className="plan-badge">3 dias grátis</div>
         <div className="plan-grid" ref={plansRef}>
           <div className="plan-card">
             <strong>Mensal</strong>
-            <span className="plan-price">R$ 69,99/mês</span>
+            <span className="plan-price">R$ 69,99 por mês</span>
+            <span>Sistema completo</span>
             <span>Suporte 24 horas</span>
+            <button
+              className="btn btn-orange"
+              onClick={onRegister}
+            >
+              Cadastrar meu restaurante
+            </button>
           </div>
           <div className="plan-card featured">
             <strong>Anual</strong>
-            <span className="plan-price">R$ 499,99/ano</span>
+            <span className="plan-price">R$ 499,99 por ano</span>
+            <span>Sistema completo</span>
             <span>Suporte 24 horas</span>
+            <button
+              className="btn btn-orange"
+              onClick={onRegister}
+            >
+              Cadastrar meu restaurante
+            </button>
           </div>
         </div>
 
-        <div className="section-title">Dúvidas frequentes</div>
-        <div className="card">
-          <h3>Quem cadastra o cardápio e os garçons?</h3>
-          <p className="hint">
-            Só o dono, na área dele. O garçom só recebe o login e a senha
-            pra entrar nas mesas.
-          </p>
-          <h3>Outro restaurante consegue ver minhas vendas?</h3>
-          <p className="hint">
-            Não. Cada restaurante vê só os dados dele — garçons, cardápio,
-            mesas e financeiro separados.
-          </p>
-          <h3>E se o cliente pedir mais depois de fechar a conta?</h3>
-          <p className="hint">
-            O garçom reabre a mesma mesa e continua o pedido normal.
-          </p>
-          <h3>Quanto custa?</h3>
-          <p className="hint">
-            3 dias grátis. Depois, R$ 69,99 por mês ou R$ 499,99 por ano —
-            os dois com suporte 24 horas.
-          </p>
-        </div>
-
         <div className="landing-final">
+          <h2>Cadastre seu restaurante</h2>
           <p>
             Pronto pra começar? Cadastre seu restaurante e use 3 dias
             grátis.
@@ -3586,6 +4156,7 @@ function OwnerDashboardView({
   waiters,
   settings,
   restaurantName,
+  ownerName,
   onNavigate,
   onLogout,
   onRefresh,
@@ -3594,6 +4165,7 @@ function OwnerDashboardView({
   waiters: Waiter[];
   settings: Settings;
   restaurantName: string;
+  ownerName: string;
   onNavigate: (v: View) => void;
   onLogout: () => void;
   onRefresh: () => Promise<void>;
@@ -3668,12 +4240,11 @@ function OwnerDashboardView({
   }
 
   return (
-    <div className="app">
+    <div className="app app-owner">
       <OwnerHeader
-        title="Área do dono"
-        sub="Financeiro do restaurante"
         tab="dashboard"
         restaurantName={restaurantName}
+        ownerName={ownerName}
         onNavigate={onNavigate}
         onLogout={onLogout}
       />
@@ -3695,12 +4266,15 @@ function OwnerDashboardView({
           <div className="stat-card">
             <span>Total vendido</span>
             <strong>{brl(sold)}</strong>
+            <span className="stat-sub">
+              {shown.length} {shown.length === 1 ? 'conta' : 'contas'}
+            </span>
           </div>
           <div className="stat-card">
             <span>Comissão dos garçons</span>
             <strong>{brl(commission)}</strong>
           </div>
-          <div className="stat-card">
+          <div className="stat-card highlight">
             <span>Fica pro restaurante</span>
             <strong>{brl(restaurant)}</strong>
           </div>
@@ -3727,7 +4301,7 @@ function OwnerDashboardView({
                   <span className="iline">{brl(wSold)}</span>
                 </div>
                 <div className="note-line">
-                  Comissão {pct}% · dele {brl(wComm)} · restaurante{' '}
+                  Comissão ({pct}%): {brl(wComm)} · Restaurante:{' '}
                   {brl(wSold - wComm)}
                 </div>
               </div>
@@ -3739,7 +4313,10 @@ function OwnerDashboardView({
           Contas fechadas ({shown.length})
         </div>
         {shown.length === 0 ? (
-          <div className="empty">Nenhuma venda nesse período.</div>
+          <div className="empty">
+            Nenhuma conta fechada neste período. Quando um garçom fechar
+            uma mesa, a venda aparece aqui sozinha.
+          </div>
         ) : (
           shown.map((b) => (
             <div key={b.id} className="item-row">
@@ -3759,19 +4336,27 @@ function OwnerDashboardView({
         )}
 
         <div style={{ height: 12 }} />
-        <button className="btn btn-ghost" onClick={() => void onRefresh()}>
-          Atualizar
-        </button>
+        <div style={{ textAlign: 'right' }}>
+          <button
+            className="btn btn-ghost btn-auto"
+            onClick={() => void onRefresh()}
+          >
+            Atualizar
+          </button>
+        </div>
         <div style={{ height: 10 }} />
         {dayMsg && (
           <div className={dayMsg.error ? 'error' : 'ok-note'}>{dayMsg.text}</div>
         )}
         {dayClosed ? (
           <>
-            <div className="error">
-              Dia encerrado — os garçons não conseguem abrir mesa nova nem
-              fazer pedido novo. Mesas abertas ainda podem ser fechadas.
-              Reabre sozinho amanhã às 9h.
+            <div className="card">
+              <h3>Dia encerrado</h3>
+              <p className="hint">
+                Os garçons não conseguem abrir mesa nova nem fazer pedido
+                novo. Mesas abertas ainda podem ser fechadas. Reabre
+                sozinho amanhã às 9h.
+              </p>
             </div>
             <button
               className="btn btn-purple"
@@ -3783,7 +4368,7 @@ function OwnerDashboardView({
           </>
         ) : (
           <button
-            className="btn btn-purple"
+            className="btn btn-dark"
             disabled={busyDay}
             onClick={() => setConfirmFinalize(true)}
           >
@@ -3808,7 +4393,7 @@ function OwnerDashboardView({
                 <strong>{brl(todaySold)}</strong>
               </div>
               <div className="stat-card">
-                <span>A pagar aos garçons</span>
+                <span>Total a pagar aos garçons</span>
                 <strong>{brl(todayCommission)}</strong>
               </div>
               <div className="stat-card">
@@ -3837,18 +4422,18 @@ function OwnerDashboardView({
             )}
             <div style={{ height: 12 }} />
             <button
-              className="btn btn-green"
+              className="btn btn-ghost"
+              onClick={() => setConfirmFinalize(false)}
+            >
+              Voltar
+            </button>
+            <div style={{ height: 10 }} />
+            <button
+              className="btn btn-purple"
               disabled={busyDay}
               onClick={() => void finalize()}
             >
               Finalizar dia
-            </button>
-            <div style={{ height: 10 }} />
-            <button
-              className="btn btn-ghost"
-              onClick={() => setConfirmFinalize(false)}
-            >
-              Cancelar
             </button>
           </div>
         </div>
@@ -3864,6 +4449,7 @@ function OwnerWaitersView({
   bills,
   defaultPct,
   restaurantName,
+  ownerName,
   onChanged,
   onNavigate,
   onLogout,
@@ -3872,6 +4458,7 @@ function OwnerWaitersView({
   bills: ClosedBill[];
   defaultPct: number;
   restaurantName: string;
+  ownerName: string;
   onChanged: () => Promise<void>;
   onNavigate: (v: View) => void;
   onLogout: () => void;
@@ -3881,9 +4468,39 @@ function OwnerWaitersView({
   const [password, setPassword] = useState('');
   const [pct, setPct] = useState(String(defaultPct));
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Waiter | null>(null);
+  /** QR Code dos garçons (gerado no próprio app, SVG 208px) */
+  const [qrSvg, setQrSvg] = useState('');
+  const [qrError, setQrError] = useState('');
+  const qrUrl =
+    typeof window !== 'undefined'
+      ? store.waiterLoginUrl(window.location.origin)
+      : '';
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const svg = await QRCode.toString(qrUrl, {
+          type: 'svg',
+          width: 208,
+          margin: 1,
+        });
+        if (alive) setQrSvg(svg);
+      } catch {
+        if (alive)
+          setQrError(
+            'Não foi possível gerar o QR Code. Peça pros garçons abrirem este endereço no celular.',
+          );
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [qrUrl]);
 
   function startEdit(w: Waiter) {
     setEditingId(w.id);
@@ -3891,10 +4508,12 @@ function OwnerWaitersView({
     setLogin(w.login);
     setPassword('');
     setPct(String(w.commission_pct ?? defaultPct));
+    setShowForm(true);
   }
 
   function cancelEdit() {
     setEditingId(null);
+    setShowForm(false);
     setName('');
     setLogin('');
     setPassword('');
@@ -3942,12 +4561,11 @@ function OwnerWaitersView({
   }
 
   return (
-    <div className="app">
+    <div className="app app-owner">
       <OwnerHeader
-        title="Garçons"
-        sub="Só o dono cadastra os garçons — depois passa o login e a senha pra cada um"
         tab="waiters"
         restaurantName={restaurantName}
+        ownerName={ownerName}
         onNavigate={onNavigate}
         onLogout={onLogout}
       />
@@ -3955,121 +4573,179 @@ function OwnerWaitersView({
         {error && <div className="error">{error}</div>}
 
         <div className="card">
-          <h2>{editingId ? 'Editar garçom' : 'Novo garçom'}</h2>
-          <div className="field">
-            <label htmlFor="waiter-name">Nome</label>
-            <input
-              id="waiter-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Ex.: Carlos"
+          <h2>QR Code dos garçons</h2>
+          <p className="hint">
+            Mostre este código pros seus garçons: eles escaneiam com a
+            câmera do celular e já caem na tela de login deles.
+          </p>
+          {qrError && <div className="error">{qrError}</div>}
+          {qrSvg ? (
+            <div
+              className="qr-svg"
+              dangerouslySetInnerHTML={{ __html: qrSvg }}
             />
-          </div>
-          <div className="row2">
-            <div className="field">
-              <label htmlFor="waiter-login">Login</label>
-              <input
-                id="waiter-login"
-                autoComplete="username"
-                value={login}
-                disabled={!!editingId}
-                onChange={(e) => setLogin(e.target.value)}
-                placeholder="Ex.: carlos"
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="waiter-pct">Comissão (%)</label>
-              <input
-                id="waiter-pct"
-                inputMode="decimal"
-                value={pct}
-                onChange={(e) => setPct(e.target.value)}
-                placeholder="8"
-              />
-            </div>
-          </div>
-          <div className="field">
-            <label htmlFor="waiter-password">
-              {editingId ? 'Nova senha (deixe em branco pra manter)' : 'Senha'}
-            </label>
-            <input
-              id="waiter-password"
-              type="password"
-              autoComplete="new-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Mínimo 4 caracteres"
-            />
-          </div>
-          <button className="btn btn-purple" disabled={busy} onClick={save}>
-            {editingId ? 'Salvar alterações' : 'Cadastrar garçom'}
-          </button>
-          {editingId && (
-            <>
-              <div style={{ height: 10 }} />
-              <button className="btn btn-ghost" onClick={cancelEdit}>
-                Cancelar edição
-              </button>
-            </>
+          ) : (
+            !qrError && <div className="loading">Gerando o QR Code…</div>
           )}
+          <p className="hint qr-url">{qrUrl}</p>
         </div>
 
-        <div className="section-title">Garçons cadastrados ({waiters.length})</div>
+        <div className="title-row">
+          <h2 className="section-title" style={{ margin: 0 }}>
+            Garçons ({waiters.length})
+          </h2>
+          <button
+            className="btn btn-purple btn-auto"
+            onClick={() => {
+              cancelEdit();
+              setShowForm(true);
+            }}
+          >
+            Novo garçom
+          </button>
+        </div>
+        <p className="hint">
+          Quem cadastra o garçom é você: depois é só passar o usuário e a
+          senha pra ele entrar no sistema das mesas.
+        </p>
+
+        {showForm && (
+          <div className="card">
+            <h2>
+              {editingId
+                ? `Editar ${waiters.find((w) => w.id === editingId)?.name ?? ''}`
+                : 'Novo garçom'}
+            </h2>
+            <div className="field">
+              <label htmlFor="waiter-name">Nome do garçom</label>
+              <input
+                id="waiter-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Ex.: Carlos"
+              />
+            </div>
+            <div className="row2">
+              <div className="field">
+                <label htmlFor="waiter-login">Usuário (pra entrar)</label>
+                <input
+                  id="waiter-login"
+                  autoComplete="username"
+                  value={login}
+                  disabled={!!editingId}
+                  onChange={(e) => setLogin(e.target.value)}
+                  placeholder="Ex.: carlos"
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="waiter-pct">Comissão dele (%)</label>
+                <input
+                  id="waiter-pct"
+                  inputMode="decimal"
+                  value={pct}
+                  onChange={(e) => setPct(e.target.value)}
+                  placeholder="8"
+                />
+              </div>
+            </div>
+            <div className="field">
+              <label htmlFor="waiter-password">
+                {editingId ? 'Nova senha' : 'Senha (mínimo 4 caracteres)'}
+              </label>
+              <input
+                id="waiter-password"
+                type="password"
+                autoComplete="new-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={
+                  editingId
+                    ? 'Em branco mantém a atual'
+                    : 'Mínimo 4 caracteres'
+                }
+              />
+            </div>
+            <p className="hint">
+              Exemplo: vendeu R$ 200 com comissão de 8% → R$ 16 são dele
+              e R$ 184 ficam pro restaurante.
+            </p>
+            <button
+              className="btn btn-purple"
+              disabled={busy}
+              onClick={save}
+            >
+              {editingId ? 'Salvar alterações' : 'Cadastrar garçom'}
+            </button>
+            <div style={{ height: 10 }} />
+            <button className="btn btn-ghost" onClick={cancelEdit}>
+              Cancelar
+            </button>
+          </div>
+        )}
+
         {waiters.length === 0 ? (
           <div className="empty">Nenhum garçom cadastrado.</div>
         ) : (
-          waiters.map((w) => {
-            const wSold = bills
-              .filter((b) => b.waiter_id === w.id)
-              .reduce((s, b) => s + b.total_cents, 0);
-            return (
-              <div key={w.id} className="item-row">
-                <div className="top">
-                  <span className="iname">{w.name}</span>
-                  <span className="iline">{brl(wSold)}</span>
-                </div>
-                <div className="note-line">
-                  Login: {w.login} · Comissão: {w.commission_pct ?? 8}% ·
-                  vendeu no total {brl(wSold)}
-                </div>
-                <div className="stepper">
-                  <button onClick={() => startEdit(w)}>Editar</button>
-                  <button
-                    className="remove"
-                    onClick={() => setConfirmDelete(w)}
-                  >
-                    Remover
-                  </button>
-                </div>
+          waiters.map((w) => (
+            <div key={w.id} className="item-row">
+              <div className="top">
+                <span className="iname">{w.name}</span>
               </div>
-            );
-          })
-        )}
-        {confirmDelete && (
-          <ConfirmModal
-            title={`Remover ${confirmDelete.name}?`}
-            text="O acesso dele para de funcionar. Só dá pra remover garçom sem vendas registradas."
-            confirmLabel="Remover"
-            onConfirm={async () => {
-              const w = confirmDelete;
-              setConfirmDelete(null);
-              setError('');
-              setBusy(true);
-              try {
-                await store.deleteWaiter(w.id);
-                await onChanged();
-              } catch (e) {
-                setError(
-                  e instanceof Error
-                    ? e.message
-                    : 'Não foi possível remover.',
-                );
-              } finally {
-                setBusy(false);
-              }
-            }}
-            onCancel={() => setConfirmDelete(null)}
-          />
+              <div className="note-line">
+                usuário: {w.login} · comissão {w.commission_pct ?? 8}%
+              </div>
+              <div className="stepper">
+                <button onClick={() => startEdit(w)}>Editar</button>
+                <button
+                  className="remove"
+                  onClick={() => setConfirmDelete(w)}
+                >
+                  Remover
+                </button>
+              </div>
+              {confirmDelete?.id === w.id && (
+                <div className="confirm-box">
+                  <p>
+                    Remover o acesso de {w.name}? Ele não entra mais no
+                    sistema. As contas que ele já fechou continuam no
+                    financeiro.
+                  </p>
+                  <div className="confirm-actions">
+                    <button
+                      className="btn btn-ghost btn-auto"
+                      onClick={() => setConfirmDelete(null)}
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      className="btn btn-danger btn-auto"
+                      disabled={busy}
+                      onClick={async () => {
+                        const waiter = confirmDelete;
+                        setConfirmDelete(null);
+                        setError('');
+                        setBusy(true);
+                        try {
+                          await store.deleteWaiter(waiter.id);
+                          await onChanged();
+                        } catch (e) {
+                          setError(
+                            e instanceof Error
+                              ? e.message
+                              : 'Não foi possível remover.',
+                          );
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
+                      Remover mesmo
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))
         )}
       </div>
     </div>
@@ -4081,45 +4757,87 @@ function OwnerWaitersView({
 function OwnerMenuView({
   products,
   restaurantName,
+  ownerName,
+  pausedIds,
+  onTogglePause,
   onChanged,
   onNavigate,
   onLogout,
 }: {
   products: Product[];
   restaurantName: string;
+  ownerName: string;
+  pausedIds: Set<string>;
+  onTogglePause: (id: string) => void;
   onChanged: () => Promise<void>;
   onNavigate: (v: View) => void;
   onLogout: () => void;
 }) {
   const [editing, setEditing] = useState<Product | null>(null);
+  const [showForm, setShowForm] = useState(false);
   return (
-    <div className="app">
+    <div className="app app-owner">
       <OwnerHeader
-        title="Cardápio"
-        sub="Só o dono muda o cardápio"
         tab="menu"
         restaurantName={restaurantName}
+        ownerName={ownerName}
         onNavigate={onNavigate}
         onLogout={onLogout}
       />
       <div className="content">
-        <div className="card">
-          <h2>{editing ? `Editar: ${editing.name}` : 'Novo produto'}</h2>
-          <ProductForm
-            products={products}
-            editing={editing}
-            onAdded={async () => {
+        <div className="title-row">
+          <h2 className="section-title" style={{ margin: 0 }}>
+            Cardápio ({products.length})
+          </h2>
+          <button
+            className="btn btn-purple btn-auto"
+            onClick={() => {
               setEditing(null);
-              await onChanged();
+              setShowForm(true);
             }}
-            onCancelEdit={() => setEditing(null)}
-          />
+          >
+            Novo produto
+          </button>
         </div>
-        {products.length > 0 && (
+        <p className="hint">
+          Quem mexe no cardápio é você: o garçom só usa os produtos na hora
+          de anotar o pedido.
+        </p>
+        {showForm && (
+          <div className="card">
+            <h2>
+              {editing ? `Editar ${editing.name}` : 'Novo produto'}
+            </h2>
+            <ProductForm
+              products={products}
+              editing={editing}
+              onAdded={async () => {
+                setEditing(null);
+                setShowForm(false);
+                await onChanged();
+              }}
+              onCancelEdit={() => {
+                setEditing(null);
+                setShowForm(false);
+              }}
+            />
+          </div>
+        )}
+        {products.length === 0 ? (
+          <div className="empty">
+            O cardápio está vazio. Toque em Novo produto pra cadastrar o
+            primeiro.
+          </div>
+        ) : (
           <ProductListGrouped
             products={products}
+            pausedIds={pausedIds}
+            onTogglePause={onTogglePause}
             onDeleted={onChanged}
-            onEdit={setEditing}
+            onEdit={(p) => {
+              setEditing(p);
+              setShowForm(true);
+            }}
           />
         )}
       </div>
@@ -4132,12 +4850,14 @@ function OwnerMenuView({
 function OwnerSettingsView({
   settings,
   restaurantName,
+  ownerName,
   onSaved,
   onNavigate,
   onLogout,
 }: {
   settings: Settings;
   restaurantName: string;
+  ownerName: string;
   onSaved: () => Promise<void>;
   onNavigate: (v: View) => void;
   onLogout: () => void;
@@ -4165,8 +4885,8 @@ function OwnerSettingsView({
       setError('Informe uma comissão padrão entre 0 e 100.');
       return;
     }
-    if (!Number.isInteger(count) || count < 1 || count > 100) {
-      setError('Informe o número de mesas (1 a 100).');
+    if (!Number.isInteger(count) || count < 1 || count > 60) {
+      setError('Número de mesas inválido (de 1 a 60).');
       return;
     }
     setBusy(true);
@@ -4186,12 +4906,11 @@ function OwnerSettingsView({
   }
 
   return (
-    <div className="app">
+    <div className="app app-owner">
       <OwnerHeader
-        title="Ajustes"
-        sub="Taxa de serviço e comissão"
         tab="settings"
         restaurantName={restaurantName}
+        ownerName={ownerName}
         onNavigate={onNavigate}
         onLogout={onLogout}
       />
@@ -4199,33 +4918,37 @@ function OwnerSettingsView({
         {error && <div className="error">{error}</div>}
         {saved && <div className="ok-note">Ajustes salvos.</div>}
         <div className="card">
-          <h2>Taxa de serviço e comissão</h2>
-          <p className="hint">
-            A comissão padrão vale pros garçons novos. Quem já existe mantém
-            a % dele — pra mudar, edite o garçom na aba Garçons.
-          </p>
-          <div className="row2">
-            <div className="field">
-              <label htmlFor="owner-fee">Taxa de serviço (%)</label>
-              <input
-                id="owner-fee"
-                inputMode="decimal"
-                value={fee}
-                onChange={(e) => setFee(e.target.value)}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="owner-commission">Comissão padrão (%)</label>
-              <input
-                id="owner-commission"
-                inputMode="decimal"
-                value={commission}
-                onChange={(e) => setCommission(e.target.value)}
-              />
-            </div>
+          <h2>Ajustes</h2>
+          <div className="field">
+            <label htmlFor="owner-fee">Taxa de serviço (%)</label>
+            <input
+              id="owner-fee"
+              inputMode="decimal"
+              value={fee}
+              onChange={(e) => setFee(e.target.value)}
+            />
+            <p className="hint" style={{ marginTop: 6, marginBottom: 0 }}>
+              Somada em cima do consumo em toda conta (padrão 3%).
+            </p>
           </div>
           <div className="field">
-            <label htmlFor="owner-tables">Nº de mesas</label>
+            <label htmlFor="owner-commission">
+              Comissão padrão dos garçons (%)
+            </label>
+            <input
+              id="owner-commission"
+              inputMode="decimal"
+              value={commission}
+              onChange={(e) => setCommission(e.target.value)}
+            />
+            <p className="hint" style={{ marginTop: 6, marginBottom: 0 }}>
+              Vale pros garçons cadastrados daqui pra frente. Quem já
+              existe mantém a % dele — pra mudar, edite o garçom na aba
+              Garçons.
+            </p>
+          </div>
+          <div className="field">
+            <label htmlFor="owner-tables">Número de mesas</label>
             <input
               id="owner-tables"
               inputMode="numeric"
@@ -4236,84 +4959,6 @@ function OwnerSettingsView({
           <button className="btn btn-purple" disabled={busy} onClick={save}>
             Salvar ajustes
           </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------- DONO: QR CODE DOS GARÇONS ------------------- */
-
-/** Seção "QR Code dos garçons" na área do dono: o QR é gerado no
- * próprio app (biblioteca `qrcode`, sem serviço externo) e codifica o
- * endereço do sistema com ?tela=garcom. O garçom escaneia com o
- * celular e cai direto na tela de login dele — só login e senha. */
-function OwnerQrView({
-  restaurantName,
-  onNavigate,
-  onLogout,
-}: {
-  restaurantName: string;
-  onNavigate: (v: View) => void;
-  onLogout: () => void;
-}) {
-  const [qrDataUrl, setQrDataUrl] = useState('');
-  const [qrError, setQrError] = useState('');
-  // O endereço é o do sistema onde ele está rodando (em produção, o
-  // da Vercel) — o QR sempre aponta pro endereço certo.
-  const url =
-    typeof window !== 'undefined'
-      ? store.waiterLoginUrl(window.location.origin)
-      : '';
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const dataUrl = await QRCode.toDataURL(url, {
-          width: 280,
-          margin: 1,
-        });
-        if (alive) setQrDataUrl(dataUrl);
-      } catch {
-        if (alive) setQrError('Não foi possível gerar o QR Code.');
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [url]);
-
-  return (
-    <div className="app">
-      <OwnerHeader
-        title="QR Code dos garçons"
-        sub="Acesso do garçom"
-        tab="qr"
-        restaurantName={restaurantName}
-        onNavigate={onNavigate}
-        onLogout={onLogout}
-      />
-      <div className="content">
-        <div className="card">
-          <h2>QR Code dos garçons</h2>
-          <p className="hint">
-            Imprima e deixe no restaurante: o garçom escaneia com o celular
-            e cai direto na tela de login dele — só login e senha, sem os
-            links de dono, cadastro e administrador. O QR só abre a tela;
-            a senha continua protegendo o acesso.
-          </p>
-          {qrError && <div className="error">{qrError}</div>}
-          {qrDataUrl ? (
-            <img
-              className="qr-img"
-              src={qrDataUrl}
-              alt="QR Code de acesso do garçom"
-            />
-          ) : (
-            !qrError && <div className="loading">Gerando o QR Code…</div>
-          )}
-          <p className="hint">Endereço do QR: {url}</p>
         </div>
       </div>
     </div>

@@ -337,7 +337,7 @@ section('8 · Fonte: área do dono');
 {
   const has = (src, s, name) => check(name, src.includes(s));
   has(pageSrc, 'Sou o dono', 'login tem link "Sou o dono"');
-  has(pageSrc, 'Área do dono', 'tela "Área do dono"');
+  has(pageSrc, 'Acesso do dono', 'tela "Acesso do dono"');
   has(pageSrc, 'OwnerAuthView', 'componente de acesso do dono');
   has(pageSrc, 'OwnerDashboardView', 'componente do dashboard');
   has(pageSrc, 'OwnerWaitersView', 'componente de garçons do dono');
@@ -359,9 +359,9 @@ section('8 · Fonte: área do dono');
   has(pageSrc, "'30 dias'", 'filtro 30 dias');
   has(pageSrc, "'Tudo'", 'filtro Tudo');
   has(pageSrc, 'Cadastrar garçom', 'dono cadastra garçom');
-  has(pageSrc, 'Comissão (%)', 'garçom tem % de comissão');
+  has(pageSrc, 'Comissão dele (%)', 'garçom tem % de comissão');
   has(pageSrc, 'Salvar alterações', 'edição de garçom/produto');
-  has(pageSrc, 'Comissão padrão (%)', 'ajuste de comissão padrão');
+  has(pageSrc, 'Comissão padrão dos garçons (%)', 'ajuste de comissão padrão');
   has(pageSrc, 'Taxa de serviço (%)', 'ajuste de taxa de serviço');
   has(pageSrc, 'commission_cents', 'conta guarda comissão em centavos');
   has(pageSrc, 'commission_pct', 'conta guarda % do fechamento');
@@ -404,7 +404,7 @@ section('8 · Fonte: área do dono');
   has(pageSrc, 'Fechar mesa', 'fluxo do garçom: fechar mesa intacto');
   has(pageSrc, 'Enviar pedido', 'fluxo do garçom: enviar intacto');
   has(pageSrc, 'REVISAR', 'fluxo do garçom: revisar intacto');
-  has(pageSrc, 'Como servir', 'fluxo do garçom: como servir intacto');
+  has(pageSrc, 'Como a bebida vai ser servida?', 'fluxo do garçom: como servir intacto');
 }
 
 /* ------------------------------------------------------------------ */
@@ -505,7 +505,7 @@ section('9 · Finalizar dia');
   has(pageSrc, 'Finalizar o dia?', 'dashboard: confirmação de finalizar');
   has(pageSrc, 'Quanto pagar pra cada garçom', 'confirmação: quanto pagar por garçom');
   has(pageSrc, 'a receber', 'confirmação: valor a receber do garçom');
-  has(pageSrc, 'A pagar aos garçons', 'confirmação: total a pagar');
+  has(pageSrc, 'Total a pagar aos garçons', 'confirmação: total a pagar');
   has(pageSrc, 'Dia encerrado', 'tela de mesas: aviso de dia encerrado');
   has(pageSrc, 'Reabre amanhã às 9h', 'aviso: reabre às 9h');
   has(pageSrc, 'dayClosedNow', 'travas do garçom conferem o dia no banco');
@@ -532,7 +532,7 @@ section('9 · Finalizar dia');
   for (const s of [
     'a receber',
     'Quanto pagar pra cada garçom',
-    'A pagar aos garçons',
+    'Total a pagar aos garçons',
     'Finalizar dia',
     'Reabrir dia',
   ]) {
@@ -977,16 +977,17 @@ section('15 · Login unificado + QR Code');
     'login inexistente não entra',
     (await store.authenticate('ninguem', '1234')) === null,
   );
-  // Endereço do QR Code dos garçons (?tela=garcom).
+  // Endereço do QR Code dos garçons (?acesso=garcom, igual ao artefato;
+  // ?tela=garcom continua aceito pros links antigos).
   check(
-    'URL do QR abre a tela do garçom',
+    'URL do QR abre a tela do garçom (?acesso=garcom)',
     store.waiterLoginUrl('https://cardapio-digital-do-futuro.vercel.app') ===
-      'https://cardapio-digital-do-futuro.vercel.app/?tela=garcom',
+      'https://cardapio-digital-do-futuro.vercel.app/?acesso=garcom',
   );
   check(
     'URL do QR ignora barra no fim da base',
     store.waiterLoginUrl('https://cardapio-digital-do-futuro.vercel.app/') ===
-      'https://cardapio-digital-do-futuro.vercel.app/?tela=garcom',
+      'https://cardapio-digital-do-futuro.vercel.app/?acesso=garcom',
   );
   // Fonte da página: login principal usa o authenticate e entra na
   // área do dono quando o login é de dono.
@@ -998,10 +999,15 @@ section('15 · Login unificado + QR Code');
     'login de dono no formulário principal entra na área do dono',
     pageSrc.includes('enterOwnerArea(result.user)'),
   );
-  // Fonte da página: o parâmetro ?tela=garcom esconde os links de
-  // dono, cadastro e administrador (só login e senha do garçom).
+  // Fonte da página: o parâmetro do garçom aceita os dois (?acesso e
+  // ?tela) e esconde os links de dono, cadastro e administrador (só
+  // login e senha do garçom).
   check(
-    'parâmetro do garçom lido (?tela=garcom)',
+    'parâmetro do garçom lido (?acesso=garcom)',
+    pageSrc.includes("'acesso') === 'garcom'"),
+  );
+  check(
+    'parâmetro antigo do garçom ainda aceito (?tela=garcom)',
     pageSrc.includes("'tela') === 'garcom'"),
   );
   check(
@@ -1012,24 +1018,29 @@ section('15 · Login unificado + QR Code');
     'boot do QR pula a apresentação e vai pro login',
     pageSrc.includes("onlyWaiter ? 'login' : 'home'"),
   );
-  // Fonte da página: seção "QR Code dos garçons" na área do dono.
+  // Fonte da página: seção "QR Code dos garçons" dentro da aba
+  // Garçons do dono (antes da lista), em SVG 208px.
   check(
-    'rota do QR na área do dono (owner-qr)',
-    pageSrc.includes("'owner-qr'"),
+    'QR dentro da aba Garçons do dono (OwnerWaitersView)',
+    pageSrc.slice(
+      pageSrc.indexOf('function OwnerWaitersView'),
+      pageSrc.indexOf('/* ------------------- DONO: CARDÁPIO'),
+    ).includes('QR Code dos garçons'),
   );
   check(
     'seção "QR Code dos garçons" existe',
     pageSrc.includes('QR Code dos garçons'),
   );
   check(
-    'QR gerado no próprio app (toDataURL)',
-    pageSrc.includes('toDataURL'),
+    'QR gerado no próprio app em SVG (toString)',
+    pageSrc.includes("toString(qrUrl") &&
+      pageSrc.includes("type: 'svg'"),
   );
   check(
     'QR usa o endereço do sistema (waiterLoginUrl)',
     pageSrc.includes('store.waiterLoginUrl('),
   );
-  check('CSS do QR (.qr-img)', cssSrc.includes('.qr-img'));
+  check('CSS do QR (.qr-svg)', cssSrc.includes('.qr-svg'));
 }
 
 /* ------------------------------------------------------------------ */
@@ -1199,8 +1210,8 @@ section('18 · Cadastro realizado com sucesso');
     pageSrc.indexOf('/* ------------------------------ LOGIN'),
   );
   check(
-    'tela de sucesso tem o botão "Entrar no financeiro"',
-    successView.includes('Entrar no financeiro'),
+    'tela de sucesso tem o botão "Entrar no meu financeiro"',
+    successView.includes('Entrar no meu financeiro'),
   );
   check(
     'botão abre a tela de login do dono',
@@ -1242,28 +1253,35 @@ section('19 · Apresentação rica: vias, financeiro e calculadora');
   );
   check(
     'via do balcão (CONTA) com valores e total',
-    homeSrc.includes('CONTA') && homeSrc.includes('R$ 39,03'),
+    homeSrc.includes('CONTA') && homeSrc.includes('R$ 193,64'),
   );
   check(
     'via da cozinha e do bar sem valores (aviso)',
     homeSrc.includes('sem valores'),
   );
   check(
-    'conta do exemplo confere: 28,90 + 8,99 = 37,89, taxa 1,14',
-    homeSrc.includes('R$ 37,89') && homeSrc.includes('R$ 1,14'),
+    'conta do exemplo confere: 89,00 + 81,00 + 18,00 = 188,00, taxa 5,64',
+    homeSrc.includes('R$ 188,00') && homeSrc.includes('R$ 5,64'),
+  );
+  check(
+    'cabeçalho do exemplo: Pedido 0042, Mesa 07, 20:14, Garçom Carlos',
+    homeSrc.includes('0042') &&
+      homeSrc.includes('Mesa: 07') &&
+      homeSrc.includes('20:14') &&
+      homeSrc.includes('Garçom: Carlos'),
   );
   // Financeiro do dono.
   check(
-    'seção do financeiro do dono',
-    homeSrc.includes('O financeiro do dono'),
+    'seção do painel do dono',
+    homeSrc.includes('No painel do dono'),
   );
   check(
-    'financeiro: comissão calculada sozinha',
-    homeSrc.includes('Comissão calculada sozinha'),
+    'painel do dono: comissão automática',
+    homeSrc.includes('Comissão automática'),
   );
   check(
     'financeiro: finalizar o dia e reabrir às 9h',
-    homeSrc.includes('finalizar o dia') && homeSrc.includes('9h'),
+    homeSrc.includes('Finalizar o dia') && homeSrc.includes('9h'),
   );
   // Calculadora de comissão — exemplo do Luis: R$ 200,00 a 8% =
   // R$ 16,00 do garçom, R$ 184,00 pro restaurante.
@@ -1365,10 +1383,10 @@ section('20 · Landing escura igual à da versão de teste');
     homeSrc.includes('inBand(plansRef.current)') &&
       homeSrc.includes('inBand(ticketsRef.current)'),
   );
-  // Botão de cadastro no fim da apresentação (depois da última seção).
+  // Botões de cadastro na apresentação: cabeçalho, hero, 2 planos e fim.
   check(
-    'três botões "Cadastrar meu restaurante": cabeçalho, hero e fim',
-    (homeSrc.match(/onClick={onRegister}/g) || []).length === 3,
+    'cinco botões "Cadastrar meu restaurante": cabeçalho, hero, planos e fim',
+    (homeSrc.match(/onClick={onRegister}/g) || []).length === 5,
   );
   check(
     'botão final fica depois das Dúvidas frequentes (fim da página)',
@@ -1428,16 +1446,282 @@ section('14 · Build + HTTP');
     }
   }
   check('servidor responde HTTP 200', status === 200);
-  // O endereço do QR Code dos garçons (?tela=garcom) também serve.
+  // O endereço do QR Code dos garçons (?acesso=garcom) também serve.
   let qrStatus = 0;
   try {
-    const resQr = await fetch('http://localhost:3100/?tela=garcom');
+    const resQr = await fetch('http://localhost:3100/?acesso=garcom');
     qrStatus = resQr.status;
   } catch {
     qrStatus = 0;
   }
-  check('endereço do QR (?tela=garcom) responde HTTP 200', qrStatus === 200);
+  check('endereço do QR (?acesso=garcom) responde HTTP 200', qrStatus === 200);
+  // O parâmetro antigo (?tela=garcom) continua servindo.
+  let qrStatusOld = 0;
+  try {
+    const resQrOld = await fetch('http://localhost:3100/?tela=garcom');
+    qrStatusOld = resQrOld.status;
+  } catch {
+    qrStatusOld = 0;
+  }
+  check('endereço antigo do QR (?tela=garcom) responde HTTP 200', qrStatusOld === 200);
   server.kill('SIGTERM');
+}
+
+/* ------------------------------------------------------------------ */
+/* 21 · Port da especificação do artefato (tela por tela)              */
+/* ------------------------------------------------------------------ */
+section('21 · Port do artefato');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  const homeSrc = pageSrc.slice(
+    pageSrc.indexOf('function HomeView'),
+    pageSrc.indexOf('/* ------------------- DONO: DASHBOARD'),
+  );
+  const dashStart = pageSrc.indexOf('DONO: DASHBOARD FINANCEIRO');
+  const dashEnd = pageSrc.indexOf('DONO: GARÇONS');
+  const dashSrc = pageSrc.slice(dashStart, dashEnd);
+  const waiterSrc = pageSrc.slice(0, dashStart);
+
+  // Apresentação: menu, ordem das seções e maquete.
+  has(homeSrc, 'Pro garçom', 'landing: menu "Pro garçom"');
+  has(homeSrc, 'Pro dono', 'landing: menu "Pro dono"');
+  has(homeSrc, 'landing-nav', 'landing: menu desktop (some no mobile)');
+  has(homeSrc, 'Sem instalar nada', 'landing: checklist "Sem instalar nada"');
+  has(homeSrc, 'Dados separados', 'landing: checklist "Dados separados"');
+  has(homeSrc, 'Pedidos em andamento (3)', 'landing: maquete "Pedidos em andamento (3)"');
+  has(homeSrc, 'Mesas livres (4)', 'landing: maquete "Mesas livres (4)"');
+  has(homeSrc, 'lp-amber', 'landing: maquete com quadrado âmbar (mesa de outro)');
+  check(
+    'landing: Dúvidas frequentes vem ANTES de Planos na página',
+    homeSrc.indexOf('Dúvidas frequentes') < homeSrc.indexOf('id="planos"'),
+  );
+  check(
+    'landing: menu lista Planos antes de Dúvidas',
+    homeSrc.indexOf('>Planos<') < homeSrc.indexOf('>Dúvidas<'),
+  );
+  check(
+    'landing: 4 passos — cadastrar, equipe/cardápio, atender, financeiro',
+    homeSrc.includes('Cadastre o restaurante') &&
+      homeSrc.includes('Monte a equipe e o cardápio') &&
+      homeSrc.includes('O garçom atende pelo celular') &&
+      homeSrc.includes('A venda cai no financeiro'),
+  );
+  check(
+    'landing: "No celular do garçom" com os 4 cartões',
+    homeSrc.includes('No celular do garçom') &&
+      homeSrc.includes('Grade de mesas') &&
+      homeSrc.includes('Mesa de quem abriu') &&
+      homeSrc.includes('Bebida do jeito do cliente'),
+  );
+  check(
+    'landing: "No painel do dono" com os 4 cartões',
+    homeSrc.includes('No painel do dono') &&
+      homeSrc.includes('Vendas por garçom') &&
+      homeSrc.includes('Finalizar o dia') &&
+      homeSrc.includes('Preço e cardápio do dono'),
+  );
+  check(
+    'landing: FAQ em sanfona fechada por padrão (6 perguntas)',
+    homeSrc.includes('faq-item') &&
+      homeSrc.includes('Preciso instalar algum aplicativo?') &&
+      homeSrc.includes('Preciso de impressoras especiais?') &&
+      homeSrc.includes("useState<number | null>(null)"),
+  );
+  check(
+    'landing: planos com selo 3 dias grátis e sistema completo',
+    homeSrc.includes('plan-badge') && homeSrc.includes('Sistema completo'),
+  );
+  check(
+    'landing: cada plano tem botão "Cadastrar meu restaurante"',
+    (homeSrc.match(/Cadastrar meu restaurante/g) || []).length >= 5,
+  );
+  check(
+    'landing: CTA final "Cadastre seu restaurante"',
+    homeSrc.includes('Cadastre seu restaurante</h2>'),
+  );
+
+  // Cadastro e sucesso.
+  has(pageSrc, 'NOVO RESTAURANTE', 'cadastro: eyebrow "NOVO RESTAURANTE"');
+  has(pageSrc, 'Seu nome (dono)', 'cadastro: campo "Seu nome (dono)"');
+  has(pageSrc, 'Usuário (seu login de dono)', 'cadastro: campo "Usuário (seu login de dono)"');
+  has(pageSrc, 'Cadastro realizado com sucesso!', 'sucesso: título com "!"');
+  has(pageSrc, 'Entrar no meu financeiro', 'sucesso: botão "Entrar no meu financeiro"');
+  has(pageSrc, 'O login já vai preenchido - é só digitar a sua senha.', 'sucesso: texto do login pré-preenchido');
+
+  // Login unificado e do dono.
+  has(pageSrc, 'Entrar no sistema', 'login: título "Entrar no sistema"');
+  has(pageSrc, 'Acesso do garçom', 'login QR: título "Acesso do garçom"');
+  has(pageSrc, 'o garçom cai direto nas mesas, e o dono, no painel do restaurante dele', 'login: subtítulo unificado');
+  has(pageSrc, 'pra ver as mesas do seu restaurante', 'login QR: subtítulo do garçom');
+  has(pageSrc, 'Entrando…', 'login: botão "Entrando…" enquanto carrega');
+  has(pageSrc, 'Não foi possível entrar. Tente de novo.', 'login: erro genérico');
+  has(pageSrc, 'O acesso do garçom é criado pelo dono do restaurante', 'login: nota de quem cria o acesso');
+  has(pageSrc, 'área financeira dele', 'login: nota de quem cria o acesso (continuação)');
+  has(pageSrc, 'Entre com seu usuário e senha pra abrir a área financeira do seu restaurante.', 'dono: texto de "Acesso do dono"');
+  has(pageSrc, 'Criar acesso e entrar', 'dono: primeiro acesso "Criar acesso e entrar"');
+  has(pageSrc, 'Seu nome', 'dono: primeiro acesso tem campo "Seu nome"');
+  check(
+    'login: coluna única máx. 428px (.content.auth)',
+    cssSrc.includes('.content.auth') && cssSrc.includes('max-width: 428px'),
+  );
+  check(
+    'cadastro: coluna máx. 448px (.content.auth-wide)',
+    cssSrc.includes('.content.auth-wide') && cssSrc.includes('max-width: 448px'),
+  );
+
+  // Área do dono: cabeçalho, menu e dashboard.
+  has(pageSrc, 'Menu do dono', 'dono: nav "Menu do dono"');
+  has(pageSrc, "tab === 'dashboard'", 'dono: aba Início');
+  has(pageSrc, '<h1>Financeiro</h1>', 'dono: cabeçalho "Financeiro"');
+  check(
+    'dono: sem aba separada de QR (QR vive na aba Garçons)',
+    !pageSrc.includes("'owner-qr'") && !pageSrc.includes('OwnerQrView'),
+  );
+  check(
+    'dono: abas são Início, Garçons, Cardápio e Ajustes (sem Dashboard/QR Code)',
+    pageSrc.includes("tab === 'dashboard'") &&
+      pageSrc.includes("tab === 'waiters'") &&
+      pageSrc.includes("tab === 'menu'") &&
+      pageSrc.includes("tab === 'settings'") &&
+      pageSrc.includes('Início') &&
+      pageSrc.includes('Garçons') &&
+      pageSrc.includes('Cardápio') &&
+      pageSrc.includes('Ajustes') &&
+      !pageSrc.includes("'owner-qr'"),
+  );
+  check(
+    'dono: container max-w-3xl (.app-owner 768px)',
+    cssSrc.includes('.app-owner') && cssSrc.includes('max-width: 768px'),
+  );
+  has(dashSrc, 'conta', 'dashboard: total vendido com nº de contas');
+  has(dashSrc, 'stat-card highlight', 'dashboard: "Fica pro restaurante" em destaque');
+  has(dashSrc, 'Nenhuma conta fechada neste período.', 'dashboard: texto de vazio');
+  has(dashSrc, 'a venda aparece aqui sozinha', 'dashboard: texto de vazio (continuação)');
+  has(dashSrc, 'Comissão (', 'dashboard: "Comissão (8%): R$" por garçom');
+  has(dashSrc, 'btn-dark', 'dashboard: "Finalizar dia" escuro (#2a1e33)');
+  has(dashSrc, 'Dia encerrado', 'dashboard: cartão "Dia encerrado"');
+  has(dashSrc, 'Total a pagar aos garçons', 'dashboard: modal "Total a pagar aos garçons"');
+  check(
+    'dashboard: modal com botão "Voltar"',
+    dashSrc.includes('Voltar') && dashSrc.includes('Finalizar dia'),
+  );
+
+  // Garçons do dono.
+  const waitersSrc = pageSrc.slice(
+    pageSrc.indexOf('function OwnerWaitersView'),
+    pageSrc.indexOf('/* ------------------- DONO: CARDÁPIO'),
+  );
+  has(waitersSrc, 'QR Code dos garçons', 'garçons: QR antes da lista');
+  has(waitersSrc, 'Mostre este código pros seus garçons', 'garçons: texto do QR');
+  has(waitersSrc, 'Novo garçom', 'garçons: botão "Novo garçom"');
+  has(waitersSrc, 'Quem cadastra o garçom é você', 'garçons: texto de quem cadastra');
+  has(waitersSrc, 'Nome do garçom', 'garçons: campo "Nome do garçom"');
+  has(waitersSrc, 'Usuário (pra entrar)', 'garçons: campo "Usuário (pra entrar)"');
+  has(waitersSrc, 'Comissão dele (%)', 'garçons: campo "Comissão dele (%)"');
+  has(waitersSrc, 'vendeu R$ 200 com comissão de 8%', 'garçons: nota do exemplo R$ 200');
+  has(waitersSrc, 'usuário: ', 'garçons: linha "usuário: X · comissão 8%"');
+  has(waitersSrc, 'Remover o acesso de ', 'garçons: confirmação de remover');
+  has(waitersSrc, 'Remover mesmo', 'garçons: botão "Remover mesmo"');
+  has(waitersSrc, 'Editar ${', 'garçons: formulário "Editar <nome>"');
+
+  // Cardápio do dono.
+  const menuSrc = pageSrc.slice(
+    pageSrc.indexOf('function OwnerMenuView'),
+    pageSrc.indexOf('/* ------------------- DONO: AJUSTES'),
+  );
+  has(menuSrc, 'Cardápio (', 'cardápio: título "Cardápio (N)"');
+  has(menuSrc, 'Novo produto', 'cardápio: botão "Novo produto"');
+  has(menuSrc, 'Quem mexe no cardápio é você', 'cardápio: texto de quem mexe');
+  has(pageSrc, 'O cardápio está vazio. Toque em Novo produto pra cadastrar o', 'cardápio: texto de vazio');
+  has(pageSrc, 'primeiro.', 'cardápio: texto de vazio (continuação)');
+  has(pageSrc, 'Categoria (botão na tela de pedido)', 'cardápio: campo Categoria');
+  has(pageSrc, "category.trim() || 'Geral'", 'cardápio: categoria vazia vira Geral');
+  has(pageSrc, 'Preço inválido. Use o formato 32,90.', 'cardápio: erro de preço');
+  has(pageSrc, '300g de filé de tilápia', 'cardápio: exemplo "o que vem no prato"');
+  has(pageSrc, 'maxLength={300}', 'cardápio: "o que vem" com máx. 300');
+  has(pageSrc, 'Pausar', 'cardápio: botão "Pausar/Reativar"');
+  has(pageSrc, 'pausado', 'cardápio: linha "· pausado"');
+  has(pageSrc, 'Remover ', 'cardápio: confirmação de remover produto');
+  has(pageSrc, 'Ele some da tela de', 'cardápio: texto da confirmação');
+  has(pageSrc, 'pedido do garçom. Contas já fechadas não mudam.', 'cardápio: texto da confirmação (continuação)');
+
+  // Ajustes do dono.
+  has(pageSrc, 'Somada em cima do consumo em toda conta (padrão 3%).', 'ajustes: nota da taxa');
+  has(pageSrc, 'Vale pros garçons cadastrados daqui pra frente.', 'ajustes: nota da comissão');
+  has(pageSrc, 'Número de mesas inválido (de 1 a 60).', 'ajustes: erro de nº de mesas');
+  has(pageSrc, 'Número de mesas', 'ajustes: campo "Número de mesas"');
+
+  // Fluxo do garçom: mesas, pedir, servir, resumo, vias, revisão.
+  has(waiterSrc, 'Olá, {firstName}', 'mesas: cabeçalho "Olá, <nome> · <restaurante>"');
+  has(waiterSrc, 'Dia encerrado — o dono finalizou o dia.', 'mesas: aviso de dia encerrado');
+  has(waiterSrc, 'A mesa ${tableNumber} está com', 'mesas: "A mesa N está com X — só ele pode mexer nela."');
+  has(waiterSrc, 'Abrindo…', 'mesas: "Abrindo…" enquanto abre');
+  has(waiterSrc, 'setInterval', 'mesas: lista atualiza a cada 5 s');
+  has(waiterSrc, '5000', 'mesas: intervalo de 5 s');
+  check(
+    'cores do garçom no CSS (magenta, laranja, verde, âmbar, cinza)',
+    cssSrc.includes('#d81b9f') &&
+      cssSrc.includes('#f59e0b') &&
+      cssSrc.includes('#43a047') &&
+      cssSrc.includes('#e6a817') &&
+      cssSrc.includes('#757575'),
+  );
+  check(
+    'cores do tema no CSS (texto, cinza, borda)',
+    cssSrc.includes('#2a1e33') &&
+      cssSrc.includes('#7e7189') &&
+      cssSrc.includes('#e5dcee'),
+  );
+  has(waiterSrc, 'Resultados para', 'pedir: "Resultados para ..."');
+  has(waiterSrc, 'Nenhum produto encontrado. Confira o nome.', 'pedir: sem achado');
+  has(waiterSrc, 'O cardápio ainda está vazio. O cadastro dos produtos é', 'pedir: cardápio vazio');
+  has(waiterSrc, 'na área financeira do restaurante', 'pedir: cardápio vazio (continuação)');
+  check(
+    'pedir: REVISAR só com o rótulo (sem contagem/total)',
+    waiterSrc.includes('✓ REVISAR') && !waiterSrc.includes('REVISAR ({pendingCount})'),
+  );
+  has(waiterSrc, 'Como a bebida vai ser servida?', 'servir: pergunta do refrigerante');
+  has(waiterSrc, 'Precisa de copos', 'servir: "Precisa de copos?"');
+  has(waiterSrc, 'Não precisa', 'servir: "Não precisa"');
+  has(waiterSrc, 'Sem copos', 'servir: "Não precisa" vira "Sem copos"');
+  has(waiterSrc, 'Quantas canecas vai precisar?', 'servir: pergunta da torre');
+  has(waiterSrc, 'Adicionar — {serveQty}', 'servir: botão "Adicionar — N copo(s)/caneca(s)"');
+  has(waiterSrc, 'Math.min(30, q + 1)', 'servir: stepper até 30');
+  has(waiterSrc, 'A enviar (', 'resumo: seção "A ENVIAR (N)"');
+  has(waiterSrc, 'Total da mesa', 'resumo: "Total da mesa"');
+  has(waiterSrc, 'Enviar pedido (', 'resumo: botão "Enviar pedido (N)"');
+  has(waiterSrc, 'Depois de enviar, a mesa continua sua', 'resumo: aviso depois de enviar');
+  has(waiterSrc, 'Envie os itens pendentes pra cozinha/bar antes de fechar a mesa.', 'resumo: fechar com pendência');
+  has(waiterSrc, 'Fechar a mesa {tableNumber}?', 'resumo: confirmação "Fechar a mesa N?"');
+  has(waiterSrc, 'A conta completa sai na impressora do balcão e a mesa fica', 'resumo: texto da confirmação');
+  has(waiterSrc, 'livre.', 'resumo: texto da confirmação (continuação)');
+  has(waiterSrc, 'Fechar e imprimir', 'resumo: botão "Fechar e imprimir"');
+  has(waiterSrc, 'Vias impressas desta mesa', 'resumo: lista "Vias impressas desta mesa"');
+  has(waiterSrc, 'Via impressa', 'resumo: modal "Via impressa"');
+  has(waiterSrc, 'Pedido enviado — vias impressas', 'envio: modal "Pedido enviado — vias impressas"');
+  has(waiterSrc, 'OK, voltar à mesa', 'envio: botão "OK, voltar à mesa"');
+  has(waiterSrc, 'Conta fechada — via do balcão', 'conta: modal "Conta fechada — via do balcão"');
+  has(waiterSrc, 'Ver revisão da mesa', 'conta: botão "Ver revisão da mesa"');
+  has(waiterSrc, 'O que tinha em cada mesa que você fechou.', 'revisão: texto de abertura');
+  has(waiterSrc, 'Você ainda não fechou nenhuma mesa.', 'revisão: texto de vazio');
+  has(waiterSrc, 'Fechada em {formatDateTime', 'revisão: cartão "Fechada em dd/mm HH:MM · N itens"');
+  has(waiterSrc, 'Aberta às {formatTime', 'revisão: "Aberta às HH:MM · fechada às HH:MM"');
+  has(waiterSrc, 'Ver via do balcão', 'revisão: botão "Ver via do balcão"');
+  has(waiterSrc, 'Via do balcão — conta fechada', 'revisão: modal "Via do balcão — conta fechada"');
+  has(waiterSrc, 'station-badge', 'resumo/revisão: selo Cozinha/Bar');
+  has(waiterSrc, 'obs: ${item.note} (editar)', 'resumo: "obs: <texto> (editar)"');
+  has(waiterSrc, 'note-save', 'resumo: botão verde "Salvar" da observação');
+  check(
+    'cupom: papel #fffdf7 máx. 320px, nome em Archivo 26px',
+    cssSrc.includes('#fffdf7') &&
+      cssSrc.includes('max-width: 320px') &&
+      cssSrc.includes('font-size: 26px'),
+  );
+  has(pageSrc, '<span>TOTAL</span>', 'conta: "TOTAL" em destaque');
+  check(
+    'vias: sem "✓ Pedido em preparo!" (só "Pedido em preparo!")',
+    !pageSrc.includes('✓ Pedido em preparo!'),
+  );
 }
 
 console.log(`\n========================================`);

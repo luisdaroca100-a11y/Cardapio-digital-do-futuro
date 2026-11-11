@@ -3,18 +3,18 @@
   --purple-dark: #6d1b80;
   --purple-light: #f3e5f5;
   --blue: #2196f3;
-  --pink: #d81b60;
+  --pink: #d81b9f;
   --pink-dark: #ad1457;
-  --orange: #f57c00;
+  --orange: #f59e0b;
   --orange-dark: #e65100;
   --orange-light: #fff3e0;
-  --green: #2e9e44;
+  --green: #43a047;
   --green-dark: #1f7a33;
-  --green-light: #e6f4ea;
-  --red: #c62828;
-  --ink: #222222;
-  --muted: #666666;
-  --line: #e8e8e8;
+  --green-light: #e7f4e8;
+  --red: #b3261e;
+  --ink: #2a1e33;
+  --muted: #7e7189;
+  --line: #e5dcee;
   --bg: #ffffff;
   --card: #ffffff;
   --radius: 14px;
@@ -40,6 +40,18 @@ button {
   cursor: pointer;
 }
 
+/* Fonte display Archivo para números e títulos; system-ui pro corpo. */
+h1,
+h2,
+h3,
+.section-title,
+.mesa-num,
+.stat-card strong,
+.ticket .t-name,
+.ticket .t-num strong {
+  font-family: 'Archivo', system-ui, -apple-system, sans-serif;
+}
+
 input,
 select {
   font-family: inherit;
@@ -58,6 +70,30 @@ select {
 .content {
   flex: 1;
   padding: 14px 14px 20px;
+}
+
+/* Telas de acesso em coluna única centralizada (login 428px,
+ * cadastro e sucesso 448px). */
+.content.auth {
+  width: 100%;
+  max-width: 428px;
+  margin: 0 auto;
+}
+
+.content.auth-wide {
+  width: 100%;
+  max-width: 448px;
+  margin: 0 auto;
+}
+
+/* Olho (eyebrow) roxo acima dos títulos de acesso/cadastro. */
+.eyebrow {
+  color: var(--purple);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
 }
 
 /* Apresentação: espaço no fim da página pra o conteúdo rolar por
@@ -243,6 +279,31 @@ select {
 
 .btn-green:active {
   background: var(--green-dark);
+}
+
+/* Botão escuro ("Finalizar dia"): fundo #2a1e33, texto branco. */
+.btn-dark {
+  background: #2a1e33;
+  color: #fff;
+}
+
+/* Botão com largura do conteúdo (não ocupa a linha toda). */
+.btn-auto {
+  width: auto;
+  padding: 12px 18px;
+}
+
+/* Botão vermelho de remoção ("Remover mesmo"). */
+.btn-danger {
+  background: var(--red);
+  color: #fff;
+}
+
+/* Botão branco com borda e texto roxos ("Adicionar produtos"). */
+.btn-outline-purple {
+  background: #fff;
+  color: var(--purple);
+  border: 2px solid var(--purple);
 }
 
 .btn-orange {
@@ -477,11 +538,11 @@ select {
 }
 
 .mesa-tile.other {
-  background: #f5a623;
+  background: #e6a817;
 }
 
 .mesa-tile.free {
-  background: #9e9e9e;
+  background: #757575;
 }
 
 .mesa-tile:disabled {
@@ -529,8 +590,34 @@ select {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 12px;
-  margin-bottom: 10px;
   text-align: left;
+}
+
+/* Cartão da conta fechada na Revisão; a recém-fechada abre com
+ * borda roxa em destaque. */
+.review-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin-bottom: 10px;
+  background: #fff;
+}
+
+.review-card .review-row {
+  border: none;
+  margin-bottom: 0;
+}
+
+.review-card.highlighted {
+  border: 2px solid var(--purple);
+}
+
+.review-card.open {
+  border-color: var(--purple);
+}
+
+.review-detail {
+  border-top: 1px solid var(--line);
+  padding: 12px;
 }
 
 .review-table {
@@ -551,7 +638,7 @@ select {
 .review-total {
   font-size: 15px;
   font-weight: 800;
-  color: var(--green-dark);
+  color: var(--purple);
 }
 
 /* ---------- busca da tela de pedir ---------- */
@@ -737,8 +824,8 @@ select {
   position: absolute;
   top: 8px;
   right: 8px;
-  background: var(--orange);
-  color: #fff;
+  background: #fff;
+  color: var(--pink);
   font-weight: 800;
   font-size: 13px;
   min-width: 26px;
@@ -776,6 +863,96 @@ select {
   text-transform: uppercase;
   color: var(--muted);
   margin: 18px 0 8px;
+}
+
+/* "A ENVIAR (N)" em roxo; "JÁ ENVIADO" fica cinza. */
+.summary-section.pending {
+  color: var(--purple);
+}
+
+/* Como a bebida vai ser servida, em roxo, na linha do item. */
+.serve-line {
+  font-size: 13px;
+  color: var(--purple);
+  font-weight: 700;
+  margin-top: 3px;
+}
+
+/* "R$ X cada" + selo da estação na linha do item. */
+.item-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.station-badge {
+  font-size: 11px;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.station-badge.kitchen {
+  background: #fdeeda;
+  color: #9a5b00;
+}
+
+.station-badge.bar {
+  background: #f6e3fa;
+  color: #7e1d99;
+}
+
+/* Link "observações" / "obs: ... (editar)" na linha do item. */
+.note-link {
+  background: none;
+  border: none;
+  color: var(--purple);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 0 0;
+  text-decoration: underline;
+  text-align: left;
+}
+
+.note-edit {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.note-edit .note-input {
+  margin-top: 0;
+  flex: 1;
+}
+
+.note-save {
+  width: auto;
+  padding: 9px 14px;
+  flex-shrink: 0;
+}
+
+/* Quadradinhos roxos de "Como servir" a bebida. */
+.serve-tile {
+  background: #a02bb5;
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  padding: 15px 10px;
+  font-size: 14px;
+  font-weight: 800;
+  text-transform: uppercase;
+  min-height: 56px;
+  min-width: 0;
+}
+
+.serve-tile:active {
+  background: #7e1d99;
 }
 
 .summary-section:first-child {
@@ -867,9 +1044,11 @@ select {
 }
 
 .totals {
-  border-top: 2px solid var(--line);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
   margin-top: 16px;
-  padding-top: 12px;
 }
 
 .totals .trow {
@@ -910,11 +1089,13 @@ select {
 }
 
 .ticket {
-  background: #fff;
+  background: #fffdf7;
+  color: #1c1710;
   border: 1px dashed #bbb;
   border-radius: 6px;
   padding: 14px;
-  margin-bottom: 14px;
+  margin: 0 auto 14px;
+  max-width: 320px;
   font-family: ui-monospace, 'Courier New', monospace;
 }
 
@@ -988,7 +1169,7 @@ select {
   flex: 1;
   text-align: center;
   font-weight: 800;
-  font-size: 15px;
+  font-size: 26px;
   line-height: 1.25;
 }
 
@@ -1100,12 +1281,29 @@ select {
   color: var(--muted);
 }
 
-.prod-list-item button {
+.prod-list-price {
+  font-weight: 800;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.prod-list-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.prod-list-actions button {
   border: none;
   background: none;
-  color: var(--red);
+  color: var(--purple);
   font-weight: 700;
   font-size: 13px;
+  padding: 4px 6px;
+}
+
+.prod-list-actions button.danger {
+  color: var(--red);
 }
 
 .empty {
@@ -1126,6 +1324,153 @@ select {
 
 /* ---------- área do dono ---------- */
 
+/* Área do dono mais larga (max-w-3xl). */
+.app-owner {
+  max-width: 768px;
+}
+
+/* Cabeçalho branco da área do dono: "Financeiro" + restaurante e
+ * "Olá, <nome>"; Sair com borda. */
+.owner-header {
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+  padding: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.owner-header h1 {
+  font-size: 19px;
+  margin: 0;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.owner-sub {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.owner-logout {
+  background: #fff;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.owner-nav-label {
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  padding: 14px 14px 0;
+}
+
+/* "Menu do dono" em grade de 4 colunas; ativa roxa, inativa branca. */
+.owner-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 8px 14px 0;
+  background: #fff;
+}
+
+.owner-tabs button {
+  padding: 10px 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.owner-tabs button.on {
+  background: var(--purple);
+  border-color: var(--purple);
+  color: #fff;
+}
+
+/* Linha de título + botão ("Garçons (N)" + "Novo garçom"). */
+.title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 18px 0 8px;
+}
+
+/* Caixa de confirmação de remoção (#fdecea). */
+.confirm-box {
+  background: #fdecea;
+  border-radius: 10px;
+  padding: 12px;
+  margin-top: 10px;
+}
+
+.confirm-box p {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+/* QR Code dos garçons em SVG (208px, módulos pretos, fundo branco). */
+.qr-svg {
+  width: 208px;
+  margin: 16px auto;
+  background: #fff;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.qr-svg svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.qr-url {
+  font-family: ui-monospace, 'Courier New', monospace;
+  font-size: 12px;
+  word-break: break-all;
+  text-align: center;
+}
+
+/* Círculo verde de sucesso no cadastro. */
+.success-card {
+  text-align: center;
+}
+
+.success-check {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #43a047;
+  color: #fff;
+  font-size: 32px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 8px auto 14px;
+}
+
 /* Link discreto "Sou o dono" na tela de login */
 .owner-link {
   display: block;
@@ -1142,30 +1487,6 @@ select {
 .admin-link {
   opacity: 0.65;
   font-size: 13px;
-}
-
-/* Abas da área do dono (Dashboard, Garçons, Cardápio, Ajustes) */
-.owner-tabs {
-  display: flex;
-  gap: 6px;
-  padding: 10px 12px 0;
-  background: var(--purple);
-}
-
-.owner-tabs button {
-  flex: 1;
-  padding: 9px 4px;
-  border: none;
-  border-radius: 10px 10px 0 0;
-  background: rgba(255, 255, 255, 0.18);
-  color: #fff;
-  font-weight: 700;
-  font-size: 14px;
-}
-
-.owner-tabs button.on {
-  background: #fff;
-  color: var(--purple-dark);
 }
 
 /* Cartões de resumo do dashboard (vendido / comissão / restaurante) */
@@ -1194,6 +1515,23 @@ select {
 .stat-card strong {
   font-size: 17px;
   color: var(--ink);
+}
+
+/* "Fica pro restaurante": borda roxa, fundo lilás, valor roxo. */
+.stat-card.highlight {
+  border: 2px solid var(--purple);
+  background: #f6f1fa;
+}
+
+.stat-card.highlight strong {
+  color: var(--purple);
+}
+
+.stat-card .stat-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+  margin-bottom: 0;
 }
 
 /* Estado ativo genérico do controle segmentado (filtro de período) */
@@ -1359,14 +1697,16 @@ select {
 
 .app.landing {
   background: #17110c;
-  color: #f5efe9;
+  color: #f6eee2;
+  max-width: 720px;
 }
 
 .landing .btn-orange {
   background: #f26a3d;
 }
 
-/* Cabeçalho: nome à esquerda, botão de cadastro à direita */
+/* Cabeçalho fixo: nome à esquerda, menu no meio, botão à direita.
+ * No mobile o menu some e fica só o botão de cadastro. */
 .landing-header {
   display: flex;
   align-items: center;
@@ -1374,12 +1714,43 @@ select {
   gap: 12px;
   padding: 14px;
   border-bottom: 1px solid #2e241b;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #17110c;
 }
 
 .landing-header strong {
   font-size: 17px;
-  color: #f5efe9;
+  color: #f6eee2;
   line-height: 1.2;
+  white-space: nowrap;
+}
+
+.landing-nav {
+  display: flex;
+  gap: 12px;
+  flex: 1;
+  justify-content: center;
+  min-width: 0;
+}
+
+.landing-nav a {
+  color: #bfae97;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.landing-nav a:hover {
+  color: #f6eee2;
+}
+
+@media (max-width: 640px) {
+  .landing-nav {
+    display: none;
+  }
 }
 
 .landing-header-cta {
@@ -1400,7 +1771,7 @@ select {
   font-size: 30px;
   font-weight: 800;
   line-height: 1.15;
-  color: #f5efe9;
+  color: #f6eee2;
 }
 
 .landing-accent {
@@ -1411,7 +1782,7 @@ select {
   margin: 0 0 18px;
   font-size: 15px;
   line-height: 1.55;
-  color: #c9b8a6;
+  color: #bfae97;
 }
 
 .landing-hero-btns {
@@ -1427,15 +1798,30 @@ select {
 
 .landing-outline {
   background: transparent;
-  color: #f5efe9;
+  color: #f6eee2;
   border: 2px solid #6b5847;
+}
+
+/* Checklist do hero: sem instalar nada, 3 dias grátis, suporte 24h,
+ * dados separados. */
+.landing-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0 0 18px;
+}
+
+.landing-checks span {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f6eee2;
 }
 
 /* Maquete de celular da tela de Mesas */
 .landing-phone {
   width: 230px;
   margin: 0 auto 10px;
-  border: 3px solid #3a2d22;
+  border: 3px solid #3d2f21;
   border-radius: 28px;
   background: #fff;
   padding: 10px;
@@ -1466,37 +1852,52 @@ select {
   padding-bottom: 4px;
 }
 
+.landing-phone-label {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--ink);
+  padding: 6px 8px 2px;
+  text-align: left;
+}
+
 .landing-phone-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 6px;
   padding: 0 8px 10px;
 }
 
 .landing-phone-grid span {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 34px;
+  height: 40px;
   border-radius: 8px;
   font-size: 11px;
   font-weight: 800;
   text-align: center;
 }
 
+.landing-phone-grid small {
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
 .lp-green {
-  background: #2e9e44;
+  background: #43a047;
   color: #fff;
 }
 
-.lp-orange {
-  background: var(--orange);
+.lp-amber {
+  background: #e6a817;
   color: #fff;
 }
 
 .lp-gray {
-  background: #e0e0e0;
-  color: #555;
+  background: #757575;
+  color: #fff;
 }
 
 /* Seções no mesmo estilo escuro (o conteúdo não muda) */
@@ -1505,25 +1906,25 @@ select {
 }
 
 .landing .hint {
-  color: #c9b8a6;
+  color: #bfae97;
 }
 
 .landing .step {
-  background: #241b14;
-  border-color: #3a2d22;
+  background: #221a13;
+  border-color: #3d2f21;
 }
 
 .landing .step strong {
-  color: #f5efe9;
+  color: #f6eee2;
 }
 
 .landing .step span {
-  color: #c9b8a6;
+  color: #bfae97;
 }
 
 .landing .plan-card {
-  background: #241b14;
-  border-color: #3a2d22;
+  background: #221a13;
+  border-color: #3d2f21;
 }
 
 .landing .plan-card.featured {
@@ -1531,25 +1932,29 @@ select {
 }
 
 .landing .plan-card strong {
-  color: #f5efe9;
+  color: #f6eee2;
 }
 
 .landing .plan-price {
   color: #f26a3d;
 }
 
-.landing .plan-card span:last-child {
-  color: #c9b8a6;
+.landing .plan-card > span:not(.plan-price) {
+  color: #bfae97;
+}
+
+.landing .plan-card .btn {
+  margin-top: 8px;
 }
 
 .landing .card {
-  background: #241b14;
-  border-color: #3a2d22;
-  color: #f5efe9;
+  background: #221a13;
+  border-color: #3d2f21;
+  color: #f6eee2;
 }
 
 .landing .calc-card h3 {
-  color: #f5efe9;
+  color: #f6eee2;
 }
 
 .landing .calc-line strong {
@@ -1558,12 +1963,61 @@ select {
 
 .landing .calc-card input {
   background: #17110c;
-  color: #f5efe9;
-  border-color: #3a2d22;
+  color: #f6eee2;
+  border-color: #3d2f21;
 }
 
 .landing .calc-card label {
-  color: #c9b8a6;
+  color: #bfae97;
+}
+
+/* Selo "3 dias grátis" acima dos planos. */
+.plan-badge {
+  display: inline-block;
+  background: #f26a3d;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+  border-radius: 999px;
+  padding: 6px 14px;
+  margin: 2px 0 12px;
+}
+
+/* Dúvidas frequentes em sanfona, fechada por padrão. */
+.faq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+
+.faq-item {
+  background: #221a13;
+  border: 1px solid #3d2f21;
+  border-radius: 12px;
+}
+
+.faq-q {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: #f6eee2;
+  font-size: 15px;
+  font-weight: 700;
+  text-align: left;
+  padding: 14px;
+}
+
+.faq-a {
+  margin: 0;
+  padding: 0 14px 14px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #bfae97;
 }
 
 /* Chamada final no fim da apresentação */
@@ -1572,11 +2026,18 @@ select {
   text-align: center;
 }
 
+.landing-final h2 {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 800;
+  color: #f6eee2;
+}
+
 .landing-final p {
   margin: 0 0 12px;
   font-size: 16px;
   font-weight: 700;
-  color: #f5efe9;
+  color: #f6eee2;
 }
 
 .landing-final .home-cta {
@@ -1591,18 +2052,4 @@ select {
 
 .landing .home-footer .owner-link {
   color: #a08a76;
-}
-
-/* ---------- QR Code dos garçons ---------- */
-
-.qr-img {
-  display: block;
-  margin: 16px auto;
-  width: 280px;
-  max-width: 100%;
-  height: auto;
-  background: #fff;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
 }
