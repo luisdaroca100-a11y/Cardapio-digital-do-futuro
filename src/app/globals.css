@@ -947,6 +947,19 @@ select {
 .ticket .t-total {
   font-weight: 800;
   font-size: 16px;
+  border-top: 1px dashed #bbb;
+  padding-top: 8px;
+  margin-top: 6px;
+}
+
+/* coluna do nome (ocupa o meio) e do preço (à direita) — via do balcão */
+.ticket .t-item {
+  flex: 1;
+}
+
+.ticket .t-price {
+  text-align: right;
+  flex-shrink: 0;
 }
 
 /* ---------- cupom de impressora térmica (vias cozinha / bar) ---------- */

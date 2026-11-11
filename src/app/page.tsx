@@ -70,11 +70,11 @@ interface TicketData {
   kitchen: OrderItem[];
   bar: OrderItem[];
   bill: ClosedBill | null;
-  /** número sequencial do envio ("Pedido Nº 0001") — só kind 'send' */
+  /** número sequencial do documento ("Pedido Nº 0001") — envio e conta */
   orderNumber?: number;
-  /** hora do envio — só kind 'send' */
+  /** hora do envio (send) ou do fechamento (close) */
   sentAt?: string;
-  /** nome do garçom que fez o pedido — vias da cozinha e do bar */
+  /** nome do garçom que fez o pedido — vias da cozinha, do bar e do balcão */
   waiterName?: string;
 }
 
@@ -521,19 +521,33 @@ function GarcomApp() {
     setBusy(true);
     try {
       if (pending.length > 0) await store.sendOrder(currentOrder.order.id);
+      // A conta é um documento impresso como os outros: ganha o próximo
+      // número sequencial (a conta cobre a mesa inteira, que pode ter
+      // vários envios — por isso não reaproveita o número de um envio).
+      const billNumber = await store.nextOrderNumber();
       const bill = await store.closeOrder(
         currentOrder.order.id,
         settings.service_fee_pct,
       );
       const ow = await store.getOrderWithItems(currentOrder.order.id);
       const allItems = ow?.items ?? currentOrder.items;
+      const { kitchen, bar } = splitTickets(allItems);
+      setTickets({
+        kind: 'close',
+        tableNumber: currentOrder.order.table_number,
+        kitchen,
+        bar,
+        bill,
+        orderNumber: billNumber,
+        sentAt: bill.closed_at,
+        waiterName: bill.waiter_name,
+      });
       setClosedReview({
         bill,
         items: allItems,
         tableNumber: currentOrder.order.table_number,
       });
       setCurrentOrder(null);
-      setTickets(null);
       setView('closed');
       await refresh();
     } catch (e) {
@@ -1222,6 +1236,13 @@ function GarcomApp() {
             Voltar às mesas
           </button>
         </div>
+        {tickets && (
+          <TicketsModal
+            data={tickets}
+            products={products}
+            onClose={() => setTickets(null)}
+          />
+        )}
       </div>
     );
   }
@@ -1922,19 +1943,45 @@ function TicketsModal({
 
         {data.bill && (
           <div className="ticket">
-            <h3>BALCÃO — CONTA FINAL</h3>
-            <div className="t-sub">
-              MESA {data.tableNumber} · {data.bill.waiter_name}
+            <div className="t-head">
+              <span className="t-logo" aria-hidden>
+                🧾
+              </span>
+              <span className="t-name">{RESTAURANT_NAME}</span>
+              <span className="t-num">
+                Pedido Nº
+                <strong>
+                  {String(data.orderNumber ?? 0).padStart(4, '0')}
+                </strong>
+              </span>
             </div>
+            <div className="t-meta">
+              Mesa: {data.tableNumber} | Hora:{' '}
+              {data.sentAt ? formatTime(data.sentAt) : ''} | Garçom:{' '}
+              {data.waiterName ?? data.bill.waiter_name}
+            </div>
+            <div className="t-band">🧾&nbsp; CONTA</div>
+            <div className="t-cols">
+              <span className="t-qty">Qtd.</span>
+              <span className="t-item">Produto</span>
+              <span className="t-price">Valor</span>
+            </div>
+            <hr />
             {[...data.kitchen, ...data.bar].map((i) => (
               <div key={i.id}>
-                <div className="t-line">
-                  <span>
-                    {i.qty}× {i.product_name}
+                <div className="t-row">
+                  <span className="t-qty">{i.qty}×</span>
+                  <span className="t-item">{i.product_name}</span>
+                  <span className="t-price">
+                    {brl(i.price_cents * i.qty)}
                   </span>
-                  <span>{brl(i.price_cents * i.qty)}</span>
                 </div>
-                {i.note && <div className="t-note">Obs.: {i.note}</div>}
+                {i.serve && <div className="t-detail">{i.serve}</div>}
+                {i.note && (
+                  <div className="t-obs">
+                    <strong>Observações:</strong> {i.note}
+                  </div>
+                )}
               </div>
             ))}
             <hr />
@@ -1950,6 +1997,8 @@ function TicketsModal({
               <span>Total</span>
               <span>{brl(data.bill.total_cents)}</span>
             </div>
+            <hr />
+            <div className="t-foot">Obrigado pela preferência!</div>
           </div>
         )}
 
