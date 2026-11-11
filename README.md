@@ -50,7 +50,11 @@ papel e o garçom anota no celular.
    do garçom.
 2. **Cadastrar meu restaurante**: o dono informa o
    nome do restaurante, o nome dele, o login e a senha. Cria o
-   restaurante + o acesso do dono e já entra logado na área do dono.
+   restaurante + o acesso do dono e mostra a tela **Cadastro realizado
+   com sucesso**, com o botão **Entrar no financeiro** embaixo — ele
+   abre a tela de login do dono com o usuário já preenchido. O dono
+   entra com a senha (não entra direto sem senha) e cai no primeiro
+   acesso.
 3. **Primeiro acesso** (só aparece uma vez, quando o restaurante ainda
    não tem garçom): cria o acesso do primeiro garçom (nome, login e
    senha) e cadastra o cardápio (nome, preço, categoria e se imprime na

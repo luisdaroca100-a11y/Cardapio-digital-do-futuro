@@ -432,6 +432,9 @@ function GarcomApp() {
         'Restaurante não identificado — rode a migração do supabase.sql.',
       );
     }
+    // O pré-preenchimento do login vale só para a primeira entrada
+    // logo após o cadastro; depois do login ele é limpo.
+    setRegisteredLogin('');
     store.setActiveRestaurant(owner.restaurant_id);
     setRestaurant(await store.getRestaurant(owner.restaurant_id));
     const s: Session = {
@@ -478,8 +481,10 @@ function GarcomApp() {
 
   /* ------------------------------ CADASTRO DO RESTAURANTE ------------------------------ */
 
-  /** Cadastro sozinho: cria o restaurante + o dono e já entra na área
-   * do dono, no primeiro acesso (criar o primeiro garçom + cardápio). */
+  /** Cadastro sozinho: cria o restaurante + o dono. NÃO entra direto —
+   * mostra a tela "Cadastro realizado com sucesso" e, embaixo, o link
+   * para a tela de login do dono (com o login já preenchido). O dono
+   * só entra na área dele depois de digitar a senha. */
   async function handleRestaurantRegister(
     restaurantName: string,
     name: string,
@@ -496,16 +501,9 @@ function GarcomApp() {
         login: login.trim(),
         passwordHash: hash,
       });
-      const s: Session = {
-        id: owner.id,
-        name: owner.name,
-        login: owner.login,
-        restaurant_id: restaurant.id,
-      };
-      setOwnerSession(s);
-      setRestaurant(restaurant);
-      safeSet(OWNER_SESSION_KEY, JSON.stringify(s));
-      setView('setup');
+      setRegisteredLogin(owner.login);
+      setRegisteredRestaurantName(restaurant.name);
+      setView('register-success');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível cadastrar.');
     } finally {
@@ -1000,6 +998,45 @@ function GarcomApp() {
     );
   }
 
+  /* ------------------------------ CADASTRO REALIZADO ------------------------------ */
+
+  if (view === 'register-success') {
+    return (
+      <div className="app">
+        <div className="hero">
+          <h1>Cadastro realizado com sucesso</h1>
+          <p>
+            O restaurante {registeredRestaurantName} foi criado. Agora entre
+            com o seu acesso de dono para configurar o financeiro, os garçons
+            e o cardápio.
+          </p>
+        </div>
+        <div className="content">
+          <div className="card">
+            <div className="ok-note">
+              Seu usuário de dono é <strong>{registeredLogin}</strong> —
+              guarde bem a sua senha.
+            </div>
+            <div style={{ height: 12 }} />
+            <button
+              className="btn btn-purple"
+              onClick={() => {
+                setOwnerAuth(true);
+                setView('login');
+              }}
+            >
+              Entrar no financeiro
+            </button>
+            <div style={{ height: 10 }} />
+            <button className="btn btn-ghost" onClick={() => setView('home')}>
+              Voltar à apresentação
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   /* ------------------------------ LOGIN ------------------------------ */
 
   if (view === 'login') {
@@ -1014,6 +1051,7 @@ function GarcomApp() {
           {ownerAuth ? (
             <OwnerAuthView
               busy={busy}
+              initialLogin={registeredLogin}
               onLogin={handleOwnerLogin}
               onCancel={() => setOwnerAuth(false)}
             />
@@ -2738,12 +2776,15 @@ function OwnerAuthView({
   busy,
   onLogin,
   onCancel,
+  initialLogin = '',
 }: {
   busy: boolean;
   onLogin: (login: string, password: string) => void;
   onCancel: () => void;
+  /** login já preenchido (vem da tela de "Cadastro realizado com sucesso") */
+  initialLogin?: string;
 }) {
-  const [login, setLogin] = useState('');
+  const [login, setLogin] = useState(initialLogin);
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 

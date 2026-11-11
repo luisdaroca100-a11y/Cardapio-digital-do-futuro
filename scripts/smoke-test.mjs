@@ -1123,6 +1123,105 @@ section('17 · Botão flutuante não cobre os planos');
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* 18 · Cadastro → tela de sucesso → login do dono pré-preenchido     */
+/* ------------------------------------------------------------------ */
+section('18 · Cadastro realizado com sucesso');
+{
+  // Funcional (modo local): o cadastro cria o restaurante + o dono, e
+  // o login criado no cadastro funciona no login (é o que a tela de
+  // sucesso pré-preenche). O cadastro em si NÃO loga ninguém.
+  const hashTeste = await store.hashPassword('senha-teste-123');
+  const { restaurant: rTeste, owner: oTeste } =
+    await store.registerRestaurant({
+      restaurantName: 'Teste Sucesso',
+      ownerName: 'Dono Teste',
+      login: 'dono-teste',
+      passwordHash: hashTeste,
+    });
+  check('restaurante novo criado', rTeste.name === 'Teste Sucesso');
+  check(
+    'restaurante novo é outro (não é o Gosto Caseiro)',
+    rTeste.id !== gostoId,
+  );
+  check(
+    'dono do restaurante novo acha pelo login',
+    (await store.findOwnerByLogin('dono-teste'))?.id === oTeste.id,
+  );
+  const authTeste = await store.authenticate('dono-teste', 'senha-teste-123');
+  check(
+    'login criado no cadastro entra como dono',
+    authTeste !== null &&
+      authTeste.kind === 'owner' &&
+      authTeste.user.login === 'dono-teste',
+  );
+  check(
+    'login criado no cadastro com senha errada não entra',
+    (await store.authenticate('dono-teste', 'errada')) === null,
+  );
+
+  // Fonte da página: o cadastro vai pra tela de sucesso, sem entrar
+  // direto na área do dono (sem sessão, sem ir pro setup).
+  const regStart = pageSrc.indexOf('async function handleRestaurantRegister');
+  const regFn = pageSrc.slice(
+    regStart,
+    pageSrc.indexOf('async function handleAdminLogin', regStart),
+  );
+  check(
+    "cadastro vai pra tela de sucesso (setView('register-success'))",
+    regFn.includes("setView('register-success')"),
+  );
+  check(
+    'cadastro NÃO entra direto na área do dono (sem sessão)',
+    !regFn.includes('setOwnerSession') &&
+      !regFn.includes('safeSet(OWNER_SESSION_KEY'),
+  );
+  check(
+    "cadastro NÃO vai direto pro setup (só depois do login)",
+    !regFn.includes("setView('setup')"),
+  );
+  check(
+    'cadastro guarda o login pra pré-preencher',
+    regFn.includes('setRegisteredLogin('),
+  );
+  check(
+    "tela 'register-success' existe no tipo View",
+    pageSrc.includes("'register-success'"),
+  );
+  check(
+    'tela de sucesso com o texto "Cadastro realizado com sucesso"',
+    pageSrc.includes('Cadastro realizado com sucesso'),
+  );
+  // Fonte da página: a tela de sucesso tem o botão que abre a tela de
+  // login do dono (com o login já preenchido).
+  const successView = pageSrc.slice(
+    pageSrc.indexOf("view === 'register-success'"),
+    pageSrc.indexOf('/* ------------------------------ LOGIN'),
+  );
+  check(
+    'tela de sucesso tem o botão "Entrar no financeiro"',
+    successView.includes('Entrar no financeiro'),
+  );
+  check(
+    'botão abre a tela de login do dono',
+    successView.includes('setOwnerAuth(true)') &&
+      successView.includes("setView('login')"),
+  );
+  check(
+    'tela de login do dono aceita login pré-preenchido (initialLogin)',
+    pageSrc.includes('initialLogin?: string') &&
+      pageSrc.includes('useState(initialLogin)'),
+  );
+  check(
+    'login do dono recebe o login criado no cadastro',
+    pageSrc.includes('initialLogin={registeredLogin}'),
+  );
+  check(
+    'primeiro acesso (setup) continua só depois do login do dono',
+    pageSrc.includes("setView(ws.length === 0 ? 'setup' : 'owner')"),
+  );
+}
+
 section('14 · Build + HTTP');
 {
   const run = (cmd, args) =>
