@@ -344,6 +344,12 @@ section('8 · Fonte: área do dono');
   has(cssSrc, '.owner-link', 'CSS: link do dono');
   has(cssSrc, '.owner-tabs', 'CSS: abas do dono');
   has(cssSrc, '.stat-grid', 'CSS: cartões do dashboard');
+  // Fechamento: só a via do balcão (CONTA) aparece; cozinha/bar só no envio.
+  has(pageSrc, "data.kind === 'send' && data.kitchen.length > 0", 'fechamento: via da cozinha só aparece no envio');
+  has(pageSrc, "data.kind === 'send' && data.bar.length > 0", 'fechamento: via do bar só aparece no envio');
+  has(pageSrc, 'kind: \'close\',', 'fechamento: modal da conta é kind close');
+  has(pageSrc, 'kind: \'send\',', 'envio: modal do pedido é kind send');
+  has(pageSrc, '{data.bill && (', 'fechamento: via do balcão (CONTA) aparece');
   // Fluxo do garçom intacto.
   has(pageSrc, 'Sistema do Garçom', 'fluxo do garçom: título intacto');
   has(pageSrc, 'Fechar mesa', 'fluxo do garçom: fechar mesa intacto');

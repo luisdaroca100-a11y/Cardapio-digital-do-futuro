@@ -2075,7 +2075,7 @@ function TicketsModal({
           </>
         )}
 
-        {data.kitchen.length > 0 && (
+        {data.kind === 'send' && data.kitchen.length > 0 && (
           <div className="ticket">
             <div className="t-head">
               <span className="t-logo" aria-hidden>
@@ -2127,7 +2127,7 @@ function TicketsModal({
           </div>
         )}
 
-        {data.bar.length > 0 && (
+        {data.kind === 'send' && data.bar.length > 0 && (
           <div className="ticket">
             <div className="t-head">
               <span className="t-logo" aria-hidden>
