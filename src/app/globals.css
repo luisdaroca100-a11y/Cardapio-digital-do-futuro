@@ -3371,3 +3371,91 @@ select {
   margin: 0 0 10px;
   line-height: 1.5;
 }
+.plans-pix {
+  width: 100%;
+  margin-top: 8px;
+}
+.plans-test {
+  border-color: var(--fin-gold);
+  border-style: dashed;
+}
+.plans-test-badge {
+  background: var(--fin-orange);
+  color: #fff;
+}
+.plans-pix-box {
+  background: var(--fin-card-2);
+  border: 1px solid var(--fin-gold-deep);
+  border-radius: 12px;
+  padding: 16px 14px;
+  margin: 0 0 12px;
+}
+.plans-pix-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--fin-ink);
+  margin-bottom: 12px;
+}
+.plans-pix-row {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+@media (max-width: 520px) {
+  .plans-pix-row {
+    flex-direction: column;
+  }
+}
+.plans-qr {
+  width: 200px;
+  height: 200px;
+  flex: 0 0 auto;
+  background: #fff;
+  border-radius: 10px;
+  padding: 6px;
+}
+.plans-pix-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.plans-pix-copy label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--fin-ink);
+}
+.plans-pix-code {
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fin-ink);
+  background: var(--fin-bg);
+  border: 1px solid var(--fin-line);
+  border-radius: 8px;
+  padding: 10px;
+  word-break: break-all;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.plans-copy {
+  width: 100%;
+}
+.plans-pix-validity {
+  font-size: 13px;
+  color: var(--fin-muted);
+  margin: 0;
+}
+.plans-pix-status {
+  font-size: 14px;
+  color: var(--fin-ink);
+  margin: 12px 0 0;
+}
+.plans-pix-confirmed {
+  color: var(--fin-gold);
+  font-weight: 700;
+}
+.plans-pix-check {
+  margin-top: 12px;
+}

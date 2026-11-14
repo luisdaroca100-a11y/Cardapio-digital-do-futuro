@@ -25,6 +25,18 @@
  * pra chamar o POST /preapproval de verdade — o payload abaixo segue
  * a documentação da API de Assinaturas e precisa ser confirmado com
  * uma credencial de teste (APP_USR) antes de anunciar como validado.
+ *
+ * Pix (pagamento único, QR code — 14/11/2026):
+ *  - Pagamento único NÃO renova: é outra API da assinatura/preapproval
+ *    (POST /v1/payments, payment_method_id "pix"). Cada ciclo pago no
+ *    Pix precisa de um QR novo — NUNCA prometer Pix automático.
+ *  - PENDÊNCIA DE VALIDAÇÃO: o valor mínimo do Pix NÃO está documentado
+ *    na referência da API; o blog oficial diz não haver mínimo pra
+ *    receber Pix (a partir de R$ 0,01), então R$ 0,50 deve passar —
+ *    mas NÃO está validado com token real. Confirmar com credencial
+ *    de teste antes de anunciar como validado.
+ *  - Pré-requisito do vendedor (fora do código): chave Pix cadastrada
+ *    na conta do Mercado Pago que recebe.
  */
 
 import type { PlanId } from './types.ts';
@@ -69,6 +81,217 @@ export function addMonths(date: Date, months: number): Date {
   // Mês mais curto (ex.: 31 jan + 1 mês): volta pro último dia.
   if (d.getDate() !== day) d.setDate(0);
   return d;
+}
+
+/** Soma dias a uma data (usado pelo plano de teste Pix: +1 dia). */
+export function addDays(date: Date, days: number): Date {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+/* ------------------------------------------------------------------ */
+/* Pix — pagamento único por QR code (POST /v1/payments)               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Flag ÚNICO do plano de teste — pra tirar o teste depois, basta
+ * trocar este valor pra false (um lugar só, nada mais muda).
+ */
+export const SHOW_TEST_PLAN = true;
+
+/** Plano de teste Pix — centralizado aqui (um lugar só). */
+export const TEST_PLAN = {
+  plan: 'test',
+  name: 'Teste',
+  priceCents: 50,
+  priceLabel: 'R$ 0,50',
+  days: 1,
+  per: '1 dia',
+} as const;
+
+/** Planos pagáveis por Pix. NÃO polui `PlanId` ('monthly' | 'annual',
+ * usado na pré-aprovação): o plano de teste é SÓ Pix, nunca vira
+ * assinatura — nunca vai pro `plan` guardado no restaurante. */
+export type PixPlanId = 'monthly' | 'annual' | 'test';
+
+/** Preços Pix em centavos — O PREÇO VEM DO PLANO, nunca do cliente. */
+export const PIX_PRICES: Record<PixPlanId, number> = {
+  monthly: 6999,
+  annual: 49999,
+  test: 50,
+};
+
+export function isPixPlanId(v: unknown): v is PixPlanId {
+  return v === 'monthly' || v === 'annual' || v === 'test';
+}
+
+/** Preço Pix em reais com 2 casas (o que a API espera). */
+export function pixPriceReais(plan: PixPlanId): number {
+  return PIX_PRICES[plan] / 100;
+}
+
+/** Descrição do pagamento Pix que aparece pro cliente no MP. */
+export function pixDescription(plan: PixPlanId): string {
+  if (plan === 'test') return 'ComandaJá — Teste 1 dia';
+  return plan === 'annual'
+    ? 'ComandaJá — Pix Anual'
+    : 'ComandaJá — Pix Mensal';
+}
+
+/** Período liberado por um pagamento Pix aprovado. */
+export function pixPeriod(plan: PixPlanId): { days?: number; months?: number } {
+  if (plan === 'test') return { days: 1 };
+  return plan === 'annual' ? { months: 12 } : { months: 1 };
+}
+
+/** CPF só com dígitos (o MP exige 11 dígitos, sem ponto/traço). */
+export function onlyDigitsCpf(cpf: string): string {
+  return cpf.replace(/\D/g, '');
+}
+
+export function isValidCpf(cpf: string): boolean {
+  return /^\d{11}$/.test(onlyDigitsCpf(cpf));
+}
+
+export interface PixPaymentPayloadInput {
+  restaurantId: string;
+  plan: PixPlanId;
+  payerEmail: string;
+  payerCpf: string;
+  notificationUrl: string;
+}
+
+/**
+ * Corpo do POST https://api.mercadopago.com/v1/payments.
+ * Sem `date_of_expiration`: vale o padrão do MP (24h). O e-mail +
+ * CPF são exigidos pelo guia do MP — enviados sempre. O preço vem
+ * do plano (tabela PIX_PRICES), nunca do cliente.
+ */
+export function buildPixPaymentPayload(input: PixPaymentPayloadInput): {
+  transaction_amount: number;
+  payment_method_id: 'pix';
+  payer: {
+    email: string;
+    identification: { type: 'CPF'; number: string };
+  };
+  description: string;
+  external_reference: string;
+  notification_url: string;
+} {
+  return {
+    transaction_amount: pixPriceReais(input.plan),
+    payment_method_id: 'pix',
+    payer: {
+      email: input.payerEmail.trim(),
+      identification: {
+        type: 'CPF',
+        number: onlyDigitsCpf(input.payerCpf),
+      },
+    },
+    description: pixDescription(input.plan),
+    external_reference: `${input.restaurantId}:pix:${input.plan}`,
+    notification_url: input.notificationUrl,
+  };
+}
+
+/** `external_reference` do Pix: `restaurantId:pix:plan`. */
+export function parsePixExternalReference(
+  ref: string | null | undefined,
+): { restaurantId: string; plan: PixPlanId } | null {
+  if (typeof ref !== 'string') return null;
+  const parts = ref.split(':');
+  if (parts.length !== 3 || parts[1] !== 'pix') return null;
+  if (!parts[0] || !isPixPlanId(parts[2])) return null;
+  return { restaurantId: parts[0], plan: parts[2] };
+}
+
+/** Plano Pix pelo valor em reais (o MP devolve o valor pago). */
+export function pixPlanFromAmount(amountReais: number): PixPlanId | null {
+  const cents = Math.round(amountReais * 100);
+  if (cents === PIX_PRICES.test) return 'test';
+  if (cents === PIX_PRICES.monthly) return 'monthly';
+  if (cents === PIX_PRICES.annual) return 'annual';
+  return null;
+}
+
+/** Pagamento Pix devolvido pelo GET /v1/payments/{id}. */
+export interface ConfirmedPixPayment {
+  id: string | number;
+  status: string;
+  status_detail?: string | null;
+  external_reference?: string | null;
+  transaction_amount?: number | null;
+  payer?: { email?: string | null } | null;
+}
+
+export type PixPaymentDecision =
+  | {
+      action: 'activate';
+      /** novo paid_until */
+      paidUntil: string;
+      plan: PixPlanId;
+      restaurantId: string;
+    }
+  | { action: 'keep'; reason: 'payment_not_approved' }
+  | { action: 'none'; reason: 'ignored' };
+
+/**
+ * Decide o que fazer no banco a partir do pagamento Pix confirmado
+ * por GET — NUNCA a partir do payload do webhook (que só traz o ID).
+ *
+ *  - `approved` + external_reference `id:pix:plano` + valor batendo
+ *    com o plano → libera. paidUntil = max(agora, paid_until atual)
+ *    + período (teste +1 dia, mensal +1 mês, anual +12 meses):
+ *    pagar ANTES do vencimento não perde dias — o prazo estende a
+ *    partir do que já estava pago.
+ *  - `rejected` / `cancelled` / `expired` → mantém (não libera nem
+ *    bloqueia na hora).
+ *  - qualquer outro estado, referência ou valor → não mexe.
+ */
+export function decidePixPaymentUpdate(input: {
+  payment: ConfirmedPixPayment | null;
+  now?: Date;
+  currentPaidUntil?: string | null;
+}): PixPaymentDecision {
+  const payment = input.payment;
+  if (!payment) return { action: 'none', reason: 'ignored' };
+  const status = payment.status;
+  if (
+    status === 'rejected' ||
+    status === 'cancelled' ||
+    status === 'expired' ||
+    payment.status_detail === 'expired'
+  ) {
+    return { action: 'keep', reason: 'payment_not_approved' };
+  }
+  if (status !== 'approved') {
+    return { action: 'none', reason: 'ignored' };
+  }
+  const parsed = parsePixExternalReference(payment.external_reference);
+  if (!parsed) return { action: 'none', reason: 'ignored' };
+  if (
+    typeof payment.transaction_amount !== 'number' ||
+    pixPlanFromAmount(payment.transaction_amount) !== parsed.plan
+  ) {
+    return { action: 'none', reason: 'ignored' };
+  }
+  const now = input.now ?? new Date();
+  let base = now.getTime();
+  if (input.currentPaidUntil) {
+    const cur = new Date(input.currentPaidUntil).getTime();
+    if (Number.isFinite(cur) && cur > base) base = cur;
+  }
+  const baseDate = new Date(base);
+  const period = pixPeriod(parsed.plan);
+  const paidUntil =
+    period.days !== undefined
+      ? addDays(baseDate, period.days)
+      : addMonths(baseDate, period.months ?? 1);
+  return {
+    action: 'activate',
+    paidUntil: paidUntil.toISOString(),
+    plan: parsed.plan,
+    restaurantId: parsed.restaurantId,
+  };
 }
 
 export interface PreapprovalPayloadInput {
@@ -139,7 +362,12 @@ export interface ConfirmedPreapproval {
 export interface ConfirmedPayment {
   id: string | number;
   status: string;
+  status_detail?: string | null;
   preapproval_id?: string | null;
+  /** Pix único: `restaurantId:pix:plano` (ausente na assinatura). */
+  external_reference?: string | null;
+  transaction_amount?: number | null;
+  payer?: { email?: string | null } | null;
 }
 
 export type SubscriptionDecision =

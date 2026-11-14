@@ -4432,6 +4432,249 @@ section('37 · Pagamento automático (Mercado Pago)');
   has(mpSrc, 'Pix Automático', 'mp.ts: documenta que Pix automático não existe na API');
 }
 
+/* ------------------------------------------------------------------ */
+/* 38 · Pix (QR code) + plano de teste de R$ 0,50                      */
+/* ------------------------------------------------------------------ */
+section('38 · Pix + plano de teste');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  const DAY = 24 * 60 * 60 * 1000;
+  const agora = new Date();
+  const iso = (ms) => new Date(ms).toISOString();
+  const pixPay = (over) => ({
+    id: 'pay-pix-1',
+    status: 'approved',
+    status_detail: 'accredited',
+    external_reference: 'rest-teste:pix:monthly',
+    transaction_amount: 69.99,
+    ...over,
+  });
+
+  // --- Preços Pix em centavos (nunca vêm do cliente).
+  check('preço Pix mensal em centavos é 6999', mp.PIX_PRICES.monthly === 6999);
+  check('preço Pix anual em centavos é 49999', mp.PIX_PRICES.annual === 49999);
+  check('preço Pix teste em centavos é 50 (R$ 0,50)', mp.PIX_PRICES.test === 50);
+  check('flag do plano de teste existe (um lugar só)', mp.SHOW_TEST_PLAN === true);
+  check('plano de teste centralizado (1 dia, R$ 0,50)', mp.TEST_PLAN.days === 1 && mp.TEST_PLAN.priceCents === 50);
+  check('addDays soma dias', mp.addDays(new Date('2026-11-14T00:00:00.000Z'), 1).toISOString() === '2026-11-15T00:00:00.000Z');
+
+  // --- buildPixPaymentPayload: campos obrigatórios.
+  const pixPayload = mp.buildPixPaymentPayload({
+    restaurantId: 'rest-123',
+    plan: 'monthly',
+    payerEmail: 'dono@restaurante.com.br',
+    payerCpf: '123.456.789-09',
+    notificationUrl: 'https://x.com.br/api/mp/webhook?source_news=webhooks',
+  });
+  check(
+    'payload Pix mensal: R$ 69,99, payment_method_id pix',
+    pixPayload.transaction_amount === 69.99 &&
+      pixPayload.payment_method_id === 'pix',
+  );
+  check(
+    'payload Pix: external_reference restaurantId:pix:plano',
+    pixPayload.external_reference === 'rest-123:pix:monthly',
+  );
+  check(
+    'payload Pix: payer com e-mail + CPF só dígitos',
+    pixPayload.payer.email === 'dono@restaurante.com.br' &&
+      pixPayload.payer.identification.type === 'CPF' &&
+      pixPayload.payer.identification.number === '12345678909',
+  );
+  check(
+    'payload Pix: sem date_of_expiration (vale o padrão de 24h)',
+    !('date_of_expiration' in pixPayload),
+  );
+  const testPayload = mp.buildPixPaymentPayload({
+    restaurantId: 'rest-123',
+    plan: 'test',
+    payerEmail: 'dono@restaurante.com.br',
+    payerCpf: '12345678909',
+    notificationUrl: 'https://x.com.br/api/mp/webhook?source_news=webhooks',
+  });
+  check(
+    'payload Pix teste: R$ 0,50',
+    testPayload.transaction_amount === 0.5 &&
+      testPayload.external_reference === 'rest-123:pix:test',
+  );
+  check(
+    'payload Pix anual: R$ 499,99',
+    mp.buildPixPaymentPayload({
+      restaurantId: 'rest-123',
+      plan: 'annual',
+      payerEmail: 'dono@restaurante.com.br',
+      payerCpf: '12345678909',
+      notificationUrl: 'https://x.com.br/api/mp/webhook?source_news=webhooks',
+    }).transaction_amount === 499.99,
+  );
+  check('CPF com 11 dígitos é válido', mp.isValidCpf('12345678909') === true);
+  check('CPF formatado é válido (só dígitos)', mp.isValidCpf('123.456.789-09') === true);
+  check('CPF com 10 dígitos é inválido', mp.isValidCpf('1234567890') === false);
+  check('CPF vazio é inválido', mp.isValidCpf('') === false);
+
+  // --- decidePixPaymentUpdate: liberação por plano.
+  check(
+    'decide Pix: aprovado mensal libera +1 mês',
+    (() => {
+      const d = mp.decidePixPaymentUpdate({ payment: pixPay({}), now: agora });
+      return (
+        d.action === 'activate' &&
+        d.plan === 'monthly' &&
+        d.paidUntil === mp.addMonths(agora, 1).toISOString()
+      );
+    })(),
+  );
+  check(
+    'decide Pix: aprovado anual libera +12 meses',
+    (() => {
+      const d = mp.decidePixPaymentUpdate({
+        payment: pixPay({
+          external_reference: 'rest-teste:pix:annual',
+          transaction_amount: 499.99,
+        }),
+        now: agora,
+      });
+      return d.action === 'activate' && d.plan === 'annual' &&
+        d.paidUntil === mp.addMonths(agora, 12).toISOString();
+    })(),
+  );
+  check(
+    'decide Pix: aprovado teste libera +1 dia',
+    (() => {
+      const d = mp.decidePixPaymentUpdate({
+        payment: pixPay({
+          external_reference: 'rest-teste:pix:test',
+          transaction_amount: 0.5,
+        }),
+        now: agora,
+      });
+      return d.action === 'activate' && d.plan === 'test' &&
+        d.paidUntil === mp.addDays(agora, 1).toISOString();
+    })(),
+  );
+  check(
+    'decide Pix: pagar antes do vencimento estende do paid_until atual',
+    (() => {
+      const d = mp.decidePixPaymentUpdate({
+        payment: pixPay({}),
+        now: agora,
+        currentPaidUntil: iso(agora.getTime() + 20 * DAY),
+      });
+      return d.action === 'activate' &&
+        d.paidUntil === mp.addMonths(new Date(agora.getTime() + 20 * DAY), 1).toISOString();
+    })(),
+  );
+  check(
+    'decide Pix: paid_until passado não perde dias (base é agora)',
+    (() => {
+      const d = mp.decidePixPaymentUpdate({
+        payment: pixPay({}),
+        now: agora,
+        currentPaidUntil: iso(agora.getTime() - 5 * DAY),
+      });
+      return d.action === 'activate' &&
+        d.paidUntil === mp.addMonths(agora, 1).toISOString();
+    })(),
+  );
+  check(
+    'decide Pix: valor errado não libera',
+    mp.decidePixPaymentUpdate({
+      payment: pixPay({ transaction_amount: 10 }),
+      now: agora,
+    }).action === 'none',
+  );
+  check(
+    'decide Pix: plano desconhecido na referência não libera',
+    mp.decidePixPaymentUpdate({
+      payment: pixPay({ external_reference: 'rest-teste:pix:plano-x' }),
+      now: agora,
+    }).action === 'none',
+  );
+  check(
+    'decide Pix: referência sem o formato não libera',
+    mp.decidePixPaymentUpdate({
+      payment: pixPay({ external_reference: 'rest-teste' }),
+      now: agora,
+    }).action === 'none',
+  );
+  check(
+    'decide Pix: pagamento pending não mexe',
+    mp.decidePixPaymentUpdate({
+      payment: pixPay({ status: 'pending' }),
+      now: agora,
+    }).action === 'none',
+  );
+  check(
+    'decide Pix: rejected mantém (não libera nem bloqueia)',
+    mp.decidePixPaymentUpdate({
+      payment: pixPay({ status: 'rejected' }),
+      now: agora,
+    }).action === 'keep',
+  );
+  check(
+    'decide Pix: cancelled mantém',
+    mp.decidePixPaymentUpdate({
+      payment: pixPay({ status: 'cancelled' }),
+      now: agora,
+    }).action === 'keep',
+  );
+  check(
+    'decide Pix: expirado (status_detail expired) mantém',
+    mp.decidePixPaymentUpdate({
+      payment: pixPay({ status: 'cancelled', status_detail: 'expired' }),
+      now: agora,
+    }).action === 'keep',
+  );
+
+  // --- Rotas: Pix (criação + status) e webhook estendido.
+  const pixSrc = readFileSync(path.join(ROOT, 'src/app/api/mp/pix/route.ts'), 'utf8');
+  has(pixSrc, '/v1/payments', 'rota Pix: cria pagamento em /v1/payments');
+  has(pixSrc, 'X-Idempotency-Key', 'rota Pix: X-Idempotency-Key obrigatório');
+  has(pixSrc, 'payment_method_id', 'rota Pix: payment_method_id pix');
+  has(pixSrc, 'buildPixPaymentPayload', 'rota Pix: payload montado em mp.ts');
+  has(pixSrc, 'qr_code', 'rota Pix: devolve qr_code (copia-e-cola)');
+  has(pixSrc, 'qr_code_base64', 'rota Pix: devolve qr_code_base64 (imagem)');
+  has(pixSrc, 'expires_at', 'rota Pix: devolve expires_at');
+  has(pixSrc, '503', 'rota Pix: sem token responde 503 com erro claro');
+  has(pixSrc, 'pagamento ainda não está configurado', 'rota Pix: erro claro em pt-BR sem token');
+  has(pixSrc, '11 dígitos', 'rota Pix: valida CPF com 11 dígitos');
+  has(pixSrc, 'paymentId', 'rota Pix: GET de status por paymentId');
+  has(webhookSrc, 'decidePixPaymentUpdate', 'webhook: trata Pix único por decidePixPaymentUpdate');
+  has(webhookSrc, 'preapproval_id', 'webhook: assinatura por cartão continua por preapproval_id');
+  has(mpSrc, 'SHOW_TEST_PLAN', 'mp.ts: flag único do plano de teste');
+  has(mpSrc, 'PIX_PRICES', 'mp.ts: preços Pix em centavos');
+  has(mpSrc, 'PENDÊNCIA DE VALIDAÇÃO', 'mp.ts: pendência do valor mínimo do Pix registrada');
+  check(
+    'types: PlanId continua só monthly|annual (teste nunca vira assinatura)',
+    /export type PlanId = 'monthly' \| 'annual'/.test(typesSrc),
+  );
+
+  // --- Tela de Planos: teste, Pix nos planos, CPF, QR + copia-e-cola.
+  has(pageSrc, 'SHOW_TEST_PLAN', 'página: cartão de teste só aparece com SHOW_TEST_PLAN');
+  has(pageSrc, 'TESTE', 'página: selo TESTE bem visível');
+  has(pageSrc, 'Pagar R$ 0,50 com Pix', 'página: botão do teste Pix');
+  has(pageSrc, 'Pagar com Pix (QR code)', 'página: botão Pix em Mensal/Anual');
+  has(pageSrc, '/api/mp/pix', 'página: pagar com Pix chama /api/mp/pix');
+  has(pageSrc, 'CPF (só pro Pix)', 'página: campo de CPF só pro Pix');
+  has(pageSrc, 'qr_code_base64', 'página: QR code em imagem base64');
+  has(pageSrc, 'data:image/jpeg;base64,', 'página: QR exibido como data URI base64');
+  has(pageSrc, 'Código copia-e-cola', 'página: código copia-e-cola ao lado do QR');
+  has(pageSrc, 'Copiar', 'página: botão Copiar o código Pix');
+  has(pageSrc, 'navigator.clipboard.writeText', 'página: copiar usa a área de transferência');
+  has(pageSrc, 'plans-pix-row', 'página: QR e copia-e-cola lado a lado (.plans-pix-row)');
+  has(pageSrc, 'Válido por 24 horas', 'página: validade de 24h do QR');
+  has(pageSrc, 'Aguardando pagamento', 'página: estado Aguardando pagamento');
+  has(pageSrc, 'Já paguei, verificar', 'página: botão Já paguei, verificar');
+  has(pageSrc, 'Pagamento confirmado — acesso liberado', 'página: confirmação libera o acesso');
+  has(pageSrc, '10000', 'página: polling do Pix a cada 10s');
+  has(pageSrc, 'Pix é pagamento único por ciclo', 'página: Pix único, não renova sozinho');
+  has(cssSrc, '.plans-pix-box', 'CSS: caixa do QR Pix');
+  has(cssSrc, '.plans-pix-row', 'CSS: QR + copia-e-cola lado a lado');
+  has(cssSrc, '.plans-qr', 'CSS: imagem do QR');
+  has(cssSrc, '.plans-pix-code', 'CSS: código copia-e-cola');
+  has(cssSrc, '.plans-test-badge', 'CSS: selo TESTE');
+}
+
 console.log(`\n========================================`);
 console.log(`SMOKE: ${pass} passaram, ${fail} falharam`);
 if (fail > 0) {

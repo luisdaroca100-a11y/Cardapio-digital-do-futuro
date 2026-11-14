@@ -48,6 +48,8 @@ import {
 } from '@/lib/escpos';
 import { LANDING_HERO_POSTER, LANDING_HERO_VIDEO, LANDING_PRINTS } from '@/lib/landing-media';
 import { COMANDAJA_LOGO } from '@/lib/logo';
+import { SHOW_TEST_PLAN, TEST_PLAN } from '@/lib/mp';
+import type { PixPlanId } from '@/lib/mp';
 import { parseMenuText, cleanMenuPhoto } from '@/lib/menuOcr';
 
 type View =
@@ -5201,9 +5203,25 @@ function OwnerPlansView({
   onChanged: () => Promise<void>;
 }) {
   const [email, setEmail] = useState(restaurant?.billing_email ?? '');
+  const [cpf, setCpf] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  // Pix (pagamento único por QR code): o QR + o copia-e-cola ficam
+  // lado a lado na mesma tela — o dono copia o código quando não
+  // quer escanear o QR. O polling acompanha o pagamento a cada 10s.
+  const [pix, setPix] = useState<{
+    plan: PixPlanId;
+    qr_code: string;
+    qr_code_base64: string;
+    payment_id: string | null;
+    expires_at: string | null;
+  } | null>(null);
+  const [pixStatus, setPixStatus] = useState<
+    'idle' | 'waiting' | 'confirmed' | 'expired'
+  >('idle');
+  const [pixChecking, setPixChecking] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const access = restaurant ? store.accessStatus(restaurant) : null;
   const fmtDate = (d: Date) => d.toLocaleDateString('pt-BR');
@@ -5254,6 +5272,137 @@ function OwnerPlansView({
       setError('Não foi possível falar com o servidor. Tente de novo.');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function checkPixStatus(paymentId: string) {
+    if (!paymentId) return false;
+    setPixChecking(true);
+    try {
+      const res = await fetch(
+        `/api/mp/pix?paymentId=${encodeURIComponent(paymentId)}`,
+      );
+      const data = (await res.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      if (!res.ok) {
+        if (typeof data.error === 'string') setError(data.error);
+        return false;
+      }
+      // Resposta válida limpa erro transitório antigo (ex.: um GET do
+      // polling que falhou e depois passou — a caixa vermelha não pode
+      // ficar fixa enquanto o painel segue em "Aguardando pagamento…").
+      setError('');
+      if (data.status === 'approved') {
+        setPixStatus('confirmed');
+        setNotice('Pagamento confirmado — acesso liberado.');
+        await onChanged();
+        return true;
+      }
+      if (
+        data.status === 'cancelled' ||
+        data.status === 'rejected' ||
+        data.status === 'expired' ||
+        data.status_detail === 'expired'
+      ) {
+        setPixStatus('expired');
+        setError(
+          'O QR code expirou ou o pagamento não foi aprovado. Gere um novo QR code pra tentar de novo.',
+        );
+        return false;
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      setPixChecking(false);
+    }
+  }
+
+  // Polling do Pix: a cada 10s, enquanto aguarda pagamento; para
+  // quando confirmar ou expirar.
+  useEffect(() => {
+    if (pixStatus !== 'waiting' || !pix?.payment_id) return;
+    const id = window.setInterval(() => {
+      void checkPixStatus(pix.payment_id as string);
+    }, 10000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pixStatus, pix?.payment_id]);
+
+  async function payWithPix(plan: PixPlanId) {
+    if (!restaurant) return;
+    setError('');
+    setNotice('');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setError('Informe um e-mail válido para o pagamento Pix.');
+      return;
+    }
+    const cpfDigits = cpf.replace(/\D/g, '');
+    if (!/^\d{11}$/.test(cpfDigits)) {
+      setError('Informe um CPF válido com 11 dígitos para pagar com Pix.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch('/api/mp/pix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          restaurantId: restaurant.id,
+          plan,
+          payerEmail: email.trim(),
+          payerCpf: cpfDigits,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      if (!res.ok) {
+        setError(
+          typeof data.error === 'string'
+            ? data.error
+            : 'Não foi possível gerar o QR code do Pix. Tente de novo.',
+        );
+        return;
+      }
+      if (
+        typeof data.qr_code !== 'string' ||
+        typeof data.qr_code_base64 !== 'string'
+      ) {
+        setError('O Mercado Pago não devolveu o QR code do Pix. Tente de novo.');
+        return;
+      }
+      setPix({
+        plan,
+        qr_code: data.qr_code,
+        qr_code_base64: data.qr_code_base64,
+        payment_id:
+          typeof data.payment_id === 'string' ? data.payment_id : null,
+        expires_at:
+          typeof data.expires_at === 'string' ? data.expires_at : null,
+      });
+      setPixStatus('waiting');
+      setCopied(false);
+    } catch {
+      setError('Não foi possível falar com o servidor. Tente de novo.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyPixCode() {
+    if (!pix?.qr_code) return;
+    try {
+      await navigator.clipboard.writeText(pix.qr_code);
+      setCopied(true);
+    } catch {
+      // Sem acesso à área de transferência: seleciona o texto pra
+      // copiar na mão (o código continua visível na tela).
+      setCopied(false);
+      setNotice('Não consegui copiar sozinho — selecione o código e copie na mão.');
     }
   }
 
@@ -5388,6 +5537,24 @@ function OwnerPlansView({
               É pra esse e-mail que o Mercado Pago envia a cobrança.
             </p>
           </div>
+          <div className="field plans-field">
+            <label htmlFor="plans-cpf">CPF (só pro Pix)</label>
+            <input
+              id="plans-cpf"
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              placeholder="000.000.000-00"
+              value={cpf}
+              onChange={(e) =>
+                setCpf(e.target.value.replace(/\D/g, '').slice(0, 11))
+              }
+            />
+            <p className="hint">
+              O Mercado Pago exige o CPF pra gerar o QR code do Pix. O
+              cartão não precisa de CPF.
+            </p>
+          </div>
           <div className="plans-grid">
             {plans.map((p) => {
               const isCurrent = currentPlan === p.plan && hasSubscription;
@@ -5417,10 +5584,102 @@ function OwnerPlansView({
                         ? 'Renovar assinatura'
                         : `Assinar ${p.name}`}
                   </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost plans-pix"
+                    disabled={busy}
+                    onClick={() => void payWithPix(p.plan)}
+                  >
+                    Pagar com Pix (QR code)
+                  </button>
                 </div>
               );
             })}
+            {SHOW_TEST_PLAN && (
+              <div className="plans-card plans-test">
+                <span className="plans-badge plans-test-badge">TESTE</span>
+                <div className="plans-name">{TEST_PLAN.name}</div>
+                <div className="plans-price">{TEST_PLAN.priceLabel}</div>
+                <div className="plans-per">{TEST_PLAN.per}</div>
+                <button
+                  type="button"
+                  className="btn btn-ghost plans-pix"
+                  disabled={busy}
+                  onClick={() => void payWithPix('test')}
+                >
+                  Pagar R$ 0,50 com Pix
+                </button>
+              </div>
+            )}
           </div>
+          {pix && (
+            <div className="plans-pix-box">
+              <div className="plans-pix-title">
+                Pague com Pix —{' '}
+                {pix.plan === 'test'
+                  ? 'Teste · 1 dia · R$ 0,50'
+                  : pix.plan === 'annual'
+                    ? 'Anual · R$ 499,99'
+                    : 'Mensal · R$ 69,99'}
+              </div>
+              <div className="plans-pix-row">
+                {pix.qr_code_base64 ? (
+                  <img
+                    className="plans-qr"
+                    src={`data:image/jpeg;base64,${pix.qr_code_base64}`}
+                    alt="QR code do Pix"
+                  />
+                ) : (
+                  <p className="plans-pix-status">
+                    QR code gerado — use o código copia-e-cola ao lado.
+                  </p>
+                )}
+                <div className="plans-pix-copy">
+                  <label htmlFor="plans-pix-code">Código copia-e-cola</label>
+                  <code id="plans-pix-code" className="plans-pix-code">
+                    {pix.qr_code}
+                  </code>
+                  <button
+                    type="button"
+                    className="btn btn-orange plans-copy"
+                    onClick={() => void copyPixCode()}
+                  >
+                    {copied ? 'Copiado!' : 'Copiar'}
+                  </button>
+                  <p className="plans-pix-validity">
+                    {pix.expires_at
+                      ? `Válido até ${new Date(pix.expires_at).toLocaleString('pt-BR')}.`
+                      : 'Válido por 24 horas.'}
+                  </p>
+                </div>
+              </div>
+              {pixStatus === 'waiting' && (
+                <p className="plans-pix-status">
+                  Aguardando pagamento… Assim que o Pix cair, o acesso
+                  libera sozinho.
+                </p>
+              )}
+              {pixStatus === 'confirmed' && (
+                <p className="plans-pix-status plans-pix-confirmed">
+                  Pagamento confirmado — acesso liberado.
+                </p>
+              )}
+              {pixStatus === 'waiting' && pix.payment_id && (
+                <button
+                  type="button"
+                  className="btn btn-ghost plans-pix-check"
+                  disabled={pixChecking}
+                  onClick={() => void checkPixStatus(pix.payment_id as string)}
+                >
+                  {pixChecking ? 'Verificando…' : 'Já paguei, verificar'}
+                </button>
+              )}
+              <p className="plans-note">
+                Pix é pagamento único por ciclo — não renova sozinho. Pra
+                continuar depois, é só gerar um novo QR code.
+              </p>
+            </div>
+          )}
           <p className="plans-note">
             A assinatura é no cartão: o Mercado Pago cobra automaticamente
             todo mês (Mensal) ou todo ano (Anual). Pix não é débito

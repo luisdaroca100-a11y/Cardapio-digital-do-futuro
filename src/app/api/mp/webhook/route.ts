@@ -1,6 +1,10 @@
 /**
  * POST /api/mp/webhook — recebe as notificações do Mercado Pago
  * (assinatura criada/atualizada, parcela autorizada, pagamento).
+ * Pagamento único Pix (sem preapproval_id) também cai aqui: é
+ * tratado por decidePixPaymentUpdate (external_reference
+ * `id:pix:plano` + valor + status approved) e NÃO muda o `plan`
+ * guardado quando é o teste de R$ 0,50.
  *
  * Regras de segurança (não flexibilizar):
  *  - O payload do webhook só traz o ID — NUNCA liberar/bloquear
@@ -17,6 +21,7 @@
  */
 import { NextResponse } from 'next/server';
 import {
+  decidePixPaymentUpdate,
   decideSubscriptionUpdate,
   type ConfirmedPayment,
   type ConfirmedPreapproval,
@@ -75,7 +80,68 @@ export async function POST(req: Request) {
         typeof payment.preapproval_id === 'string'
           ? payment.preapproval_id
           : null;
-      if (!preId) return NextResponse.json({ received: true });
+      // Pagamento único Pix NÃO tem preapproval_id: é o fluxo Pix
+      // (decidePixPaymentUpdate), não o da assinatura — trata aqui
+      // e responde; o fluxo de assinatura continua abaixo.
+      if (!preId) {
+        if (type !== 'payment') return NextResponse.json({ received: true });
+        const pixDecision = decidePixPaymentUpdate({ payment });
+        if (pixDecision.action !== 'activate') {
+          return NextResponse.json({ received: true });
+        }
+        const { data: pixRestaurant } = await sb
+          .from('restaurants')
+          .select('id, paid_until, plan')
+          .eq('id', pixDecision.restaurantId)
+          .maybeSingle();
+        if (!pixRestaurant) return NextResponse.json({ received: true });
+        // Idempotente: duplicata não estende o prazo duas vezes.
+        // (decidePixPaymentUpdate sem paid_until atual usa "agora"
+        // como base — recalcula com o paid_until guardado.)
+        const withCurrent = decidePixPaymentUpdate({
+          payment,
+          currentPaidUntil:
+            typeof (pixRestaurant as Record<string, unknown>).paid_until ===
+            'string'
+              ? ((pixRestaurant as Record<string, unknown>).paid_until as string)
+              : null,
+        });
+        if (withCurrent.action !== 'activate') {
+          return NextResponse.json({ received: true });
+        }
+        const currentPaidUntil =
+          typeof (pixRestaurant as Record<string, unknown>).paid_until ===
+          'string'
+            ? new Date(
+                (pixRestaurant as Record<string, unknown>).paid_until as string,
+              ).getTime()
+            : NaN;
+        if (
+          Number.isFinite(currentPaidUntil) &&
+          currentPaidUntil >= new Date(withCurrent.paidUntil).getTime()
+        ) {
+          return NextResponse.json({ received: true });
+        }
+        // Plano de teste NÃO muda o `plan` guardado (nunca vira
+        // assinatura); mensal/anual no Pix guardam o plano pago.
+        const pixUpdate: Record<string, unknown> = {
+          subscription_status: 'active',
+          paid_until: withCurrent.paidUntil,
+        };
+        if (withCurrent.plan !== 'test') {
+          pixUpdate.plan = withCurrent.plan;
+        }
+        const payerEmail =
+          typeof payment.payer?.email === 'string'
+            ? payment.payer.email
+            : null;
+        if (payerEmail) pixUpdate.billing_email = payerEmail;
+        await sb
+          .from('restaurants')
+          .update(pixUpdate)
+          .eq('id', pixDecision.restaurantId);
+        return NextResponse.json({ received: true });
+      }
       const preRes = await mpApi(`/preapproval/${preId}`, token);
       if (!preRes.ok) return NextResponse.json({ received: true });
       preapproval = (await preRes.json()) as ConfirmedPreapproval;
