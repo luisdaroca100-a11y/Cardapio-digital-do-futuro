@@ -3991,6 +3991,34 @@ Café Coado 4,50
   has(cssSrc, '.ocr-exists', 'CSS: selo "já existe"');
 }
 
+/* ------------------------------------------------------------------ */
+/* 36 · Apresentação em tela cheia no tablet                           */
+/* ------------------------------------------------------------------ */
+section('36 · Apresentação em tela cheia no tablet');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+
+  // --- CSS: a partir de 721px a apresentação ocupa a largura toda.
+  has(cssSrc, '@media (min-width: 721px)', 'CSS: media query da tela cheia');
+  has(cssSrc, '.landing-content', 'CSS: conteúdo centralizado da apresentação');
+  const mq = cssSrc.split('@media (min-width: 721px)')[1] || '';
+  check(
+    'CSS: .app.landing sem limite de largura na tela cheia',
+    mq.includes('.app.landing') && mq.includes('max-width: none'),
+  );
+  check(
+    'CSS: conteúdo da apresentação centralizado em 720px',
+    mq.includes('.landing-content') &&
+      mq.includes('max-width: 720px') &&
+      mq.includes('margin: 0 auto'),
+  );
+  // A base não muda: no celular a apresentação continua com 720px.
+  check(
+    'CSS: .app.landing continua com 720px na base',
+    cssSrc.includes('.app.landing {\n  background: #17110c;'),
+  );
+}
+
 console.log(`\n========================================`);
 console.log(`SMOKE: ${pass} passaram, ${fail} falharam`);
 if (fail > 0) {

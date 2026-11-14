@@ -2438,6 +2438,22 @@ select {
   max-width: 720px;
 }
 
+/* Tela cheia no tablet/desktop: a partir de 721px a apresentação ocupa
+ * a largura toda da tela, com o fundo escuro até as bordas. O conteúdo
+ * continua centralizado em 720px pra não esticar o texto. Só a
+ * apresentação muda — as telas de dentro (mesas, pedidos, painel do dono)
+ * continuam na coluna de 560px, que é como o garçom usa no celular. */
+@media (min-width: 721px) {
+  .app.landing {
+    max-width: none;
+  }
+  .landing-content {
+    width: 100%;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+}
+
 .landing .btn-orange {
   background: #f26a3d;
 }
