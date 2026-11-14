@@ -47,6 +47,8 @@ h3,
 .section-title,
 .mesa-num,
 .stat-card strong,
+.fin-summary-card strong,
+.fin-summary-hero strong,
 .ticket .t-name,
 .ticket .t-num strong {
   font-family: 'Archivo', system-ui, -apple-system, sans-serif;
@@ -216,6 +218,13 @@ select {
 .field select:focus {
   outline: 2px solid var(--purple);
   border-color: var(--purple);
+}
+
+/* Checkbox dentro de .field: não ocupa a linha toda. */
+.field input[type='checkbox'] {
+  width: auto;
+  padding: 0;
+  accent-color: var(--orange);
 }
 
 .row2 {
@@ -1367,40 +1376,6 @@ select {
   font-weight: 700;
 }
 
-.owner-nav-label {
-  font-size: 12px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: var(--muted);
-  padding: 14px 14px 0;
-}
-
-/* "Menu do dono" em grade de 4 colunas; ativa roxa, inativa branca. */
-.owner-tabs {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-  padding: 8px 14px 0;
-  background: #fff;
-}
-
-.owner-tabs button {
-  padding: 10px 4px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: #fff;
-  color: var(--ink);
-  font-weight: 700;
-  font-size: 14px;
-}
-
-.owner-tabs button.on {
-  background: var(--purple);
-  border-color: var(--purple);
-  color: #fff;
-}
-
 /* Linha de título + botão ("Garçons (N)" + "Novo garçom"). */
 .title-row {
   display: flex;
@@ -1532,6 +1507,768 @@ select {
   color: var(--muted);
   margin-top: 4px;
   margin-bottom: 0;
+}
+
+/* ---------- Financeiro do dono — blocos separados ---------- */
+
+.fin-section {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin: 0 0 16px;
+  box-shadow: 0 1px 4px rgba(42, 30, 51, 0.06);
+}
+
+.fin-section-title {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--ink);
+  margin: 0 0 4px;
+}
+
+.fin-section-sub {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+
+.fin-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.fin-section-head .fin-section-title {
+  margin: 0;
+}
+
+/* Abinhas do financeiro: Resumo | Garçons | Contas. */
+.fin-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.fin-tabs button {
+  flex: 1;
+  padding: 11px 6px;
+  border-radius: 10px;
+  border: 2px solid var(--line);
+  background: #fff;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.fin-tabs button.on {
+  border-color: var(--purple);
+  background: var(--purple-light);
+  color: var(--purple-dark);
+}
+
+/* Resumo do período: dois cartões + destaque do restaurante. */
+.fin-summary-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.fin-summary-card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 10px;
+  text-align: center;
+}
+
+.fin-summary-card span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.fin-summary-card strong {
+  font-size: 20px;
+}
+
+.fin-summary-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.fin-summary-hero {
+  border: 2px solid var(--purple);
+  background: #f6f1fa;
+  border-radius: 12px;
+  padding: 12px;
+  text-align: center;
+}
+
+.fin-summary-hero span {
+  display: block;
+  font-size: 13px;
+  color: var(--purple-dark);
+  margin-bottom: 2px;
+}
+
+.fin-summary-hero strong {
+  font-size: 28px;
+  color: var(--purple);
+}
+
+/* Gráfico de barras (CSS puro): uma coluna por dia. */
+.fin-chart {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.fin-bar-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.fin-bar-value {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  margin-bottom: 4px;
+}
+
+.fin-bar-track {
+  width: 100%;
+  height: 110px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.fin-bar {
+  width: 60%;
+  max-width: 28px;
+  background: linear-gradient(180deg, var(--purple), var(--purple-dark));
+  border-radius: 4px 4px 0 0;
+}
+
+.fin-bar-zero {
+  background: var(--line);
+}
+
+.fin-bar-day {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  margin-top: 4px;
+}
+
+.fin-bar-date {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* Cartão por garçom. */
+.fin-waiter-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 10px;
+  background: #fff;
+}
+
+.fin-waiter-card:last-child {
+  margin-bottom: 0;
+}
+
+.fin-waiter-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.fin-waiter-name {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.fin-waiter-pct {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--purple-dark);
+  background: var(--purple-light);
+  border-radius: 999px;
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+
+.fin-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 14px;
+}
+
+.fin-kv span {
+  color: var(--muted);
+}
+
+.fin-kv strong {
+  white-space: nowrap;
+}
+
+.fin-kv-total {
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+  padding-top: 8px;
+}
+
+.fin-kv-total strong {
+  color: var(--purple);
+}
+
+/* Cartão por conta fechada. */
+.fin-bill-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 10px;
+  background: #fff;
+}
+
+.fin-bill-card:last-child {
+  margin-bottom: 0;
+}
+
+.fin-bill-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.fin-bill-table {
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.fin-bill-total {
+  font-size: 16px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.fin-bill-meta {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.fin-bill-detail {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+}
+
+/* ---------- Painel do dono — identidade ComandaJá ---------- */
+/* Paleta escura/dourada/laranja, com escopo SÓ na área do dono
+ * (.fin-theme vai na raiz das 5 telas do dono: Início, Financeiro,
+ * Garçons, Cardápio e Ajustes): a apresentação, o fluxo do garçom,
+ * o /adm e o QR não mudam. */
+.fin-theme {
+  --fin-bg: #17110c;
+  --fin-card: #251a11;
+  --fin-card-2: #2e2013;
+  --fin-line: #4a3520;
+  --fin-ink: #f7f1e6;
+  --fin-muted: #c9b49a;
+  --fin-gold: #e8c15a;
+  --fin-gold-deep: #c99a2e;
+  --fin-orange: #f26a3d;
+  --fin-orange-dark: #d14e24;
+  background: var(--fin-bg);
+  color: var(--fin-ink);
+}
+
+/* Cabeçalho do dono: emblema + título, menu ⋯ na lateral. */
+.fin-theme .owner-header {
+  background: var(--fin-bg);
+  border-bottom: 1px solid var(--fin-line);
+}
+.fin-theme .owner-header h1 {
+  color: var(--fin-ink);
+}
+.fin-theme .owner-sub {
+  color: var(--fin-muted);
+}
+.fin-theme .owner-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.fin-theme .owner-brand > div {
+  min-width: 0;
+}
+.fin-theme .owner-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 2px solid var(--fin-gold);
+  flex-shrink: 0;
+}
+.fin-theme .owner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.fin-theme .owner-logout {
+  background: var(--fin-card);
+  color: var(--fin-ink);
+  border-color: var(--fin-line);
+}
+.fin-theme .owner-menu-wrap {
+  position: relative;
+}
+.fin-theme .owner-menu-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--fin-card);
+  border: 1px solid var(--fin-line);
+  color: var(--fin-ink);
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 0 0 6px;
+}
+.fin-theme .owner-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  border: none;
+  z-index: 40;
+  padding: 0;
+  cursor: default;
+}
+.fin-theme .owner-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  min-width: 220px;
+  background: var(--fin-card);
+  border: 1px solid var(--fin-line);
+  border-radius: 14px;
+  padding: 6px;
+  z-index: 41;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+.fin-theme .owner-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--fin-ink);
+  font-size: 16px;
+  font-weight: 700;
+  padding: 13px 12px;
+  border-radius: 10px;
+  min-height: 48px;
+}
+.fin-theme .owner-menu button.on {
+  background: var(--fin-orange);
+  color: #fff;
+}
+.fin-theme .owner-menu button:not(.on):active {
+  background: var(--fin-card-2);
+}
+.fin-theme .owner-menu-sep {
+  height: 1px;
+  background: var(--fin-line);
+  margin: 6px 4px;
+}
+
+/* Títulos das abas, dicas e blocos (.card) no escuro. */
+.fin-theme .section-title {
+  color: var(--fin-gold);
+}
+.fin-theme .hint {
+  color: var(--fin-muted);
+}
+.fin-theme .card {
+  background: var(--fin-card);
+  border-color: var(--fin-line);
+}
+.fin-theme .card h2 {
+  color: var(--fin-gold);
+}
+.fin-theme .qr-svg {
+  border-color: var(--fin-gold);
+}
+
+/* Formulários do dono no escuro. */
+.fin-theme .field label {
+  color: var(--fin-ink);
+}
+.fin-theme .field input,
+.fin-theme .field select {
+  background: var(--fin-bg);
+  border-color: var(--fin-line);
+  color: var(--fin-ink);
+}
+.fin-theme .field input::placeholder {
+  color: var(--fin-muted);
+}
+.fin-theme .field input:focus,
+.fin-theme .field select:focus {
+  outline: 2px solid var(--fin-gold);
+  border-color: var(--fin-gold);
+}
+.fin-theme .field input[type='checkbox'] {
+  accent-color: var(--fin-orange);
+}
+
+/* Botões secundários, de perigo e confirmação no escuro. */
+.fin-theme .btn-white {
+  background: var(--fin-card-2);
+  color: var(--fin-ink);
+  border: 1px solid var(--fin-line);
+}
+.fin-theme .btn-danger-ghost {
+  background: transparent;
+  color: #ff9a8a;
+  border-color: #7a2a24;
+}
+.fin-theme .confirm-box {
+  background: rgba(179, 38, 30, 0.18);
+  border-color: #7a2a24;
+}
+.fin-theme .confirm-box p {
+  color: var(--fin-ink);
+}
+
+/* Impressoras: bloco escuro com título dourado. */
+.fin-theme .printer-card {
+  background: var(--fin-card-2);
+  border-color: var(--fin-line);
+}
+.fin-theme .printer-card > strong {
+  color: var(--fin-gold);
+}
+.fin-theme .printer-sector > strong {
+  color: var(--fin-gold);
+}
+.fin-theme .printer-card-head > strong {
+  color: var(--fin-gold);
+}
+.fin-theme .printer-status-row {
+  border-top-color: var(--fin-line);
+}
+
+/* Cartão de garçom e cartão de produto (abas do dono). */
+.fin-theme .own-waiter-card,
+.fin-theme .own-prod-card {
+  background: var(--fin-card-2);
+  border: 1px solid var(--fin-line);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.fin-theme .own-waiter-top,
+.fin-theme .own-prod-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.fin-theme .own-waiter-top {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--fin-line);
+  margin-bottom: 10px;
+}
+.fin-theme .own-waiter-name,
+.fin-theme .own-prod-name {
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--fin-ink);
+}
+.fin-theme .own-waiter-pct {
+  background: var(--fin-gold);
+  color: var(--fin-bg);
+  font-size: 12px;
+  font-weight: 800;
+  border-radius: 999px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+.fin-theme .own-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0;
+}
+.fin-theme .own-kv span {
+  color: var(--fin-muted);
+  font-size: 14px;
+}
+.fin-theme .own-kv strong {
+  color: var(--fin-ink);
+  font-size: 14px;
+}
+.fin-theme .own-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.fin-theme .own-actions .btn {
+  flex: 1;
+}
+.fin-theme .own-prod-price {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--fin-gold);
+  white-space: nowrap;
+}
+.fin-theme .own-prod-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 6px;
+  color: var(--fin-muted);
+  font-size: 13px;
+}
+.fin-theme .own-prod-badge {
+  background: var(--fin-card);
+  border: 1px solid var(--fin-line);
+  color: var(--fin-ink);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.fin-theme .own-prod-desc {
+  color: var(--fin-muted);
+  font-size: 14px;
+  margin-top: 6px;
+}
+.fin-theme .prod-list-group h4 {
+  color: var(--fin-gold);
+}
+
+/* Filtro de período e abinhas: selecionado em laranja, bem visível. */
+.fin-theme .seg button {
+  background: var(--fin-card);
+  border-color: var(--fin-line);
+  color: var(--fin-ink);
+}
+.fin-theme .seg button.on {
+  border-color: var(--fin-orange);
+  background: var(--fin-orange);
+  color: #fff;
+}
+.fin-theme .fin-tabs button {
+  background: var(--fin-card);
+  border-color: var(--fin-line);
+  color: var(--fin-ink);
+}
+.fin-theme .fin-tabs button.on {
+  border-color: var(--fin-orange);
+  background: var(--fin-orange);
+  color: #fff;
+}
+
+/* Blocos e cartões escuros; títulos de seção em dourado. */
+.fin-theme .fin-section {
+  background: var(--fin-card);
+  border-color: var(--fin-line);
+  box-shadow: none;
+}
+.fin-theme .fin-section-title {
+  color: var(--fin-gold);
+}
+.fin-theme .fin-section-sub {
+  color: var(--fin-muted);
+}
+.fin-theme .fin-summary-card {
+  background: var(--fin-card-2);
+  border-color: var(--fin-line);
+}
+.fin-theme .fin-summary-card span {
+  color: var(--fin-muted);
+}
+.fin-theme .fin-summary-card strong {
+  color: var(--fin-ink);
+}
+.fin-theme .fin-summary-sub {
+  color: var(--fin-muted);
+}
+.fin-theme .fin-summary-hero {
+  border-color: var(--fin-gold);
+  background: rgba(232, 193, 90, 0.1);
+}
+.fin-theme .fin-summary-hero span {
+  color: var(--fin-gold);
+}
+.fin-theme .fin-summary-hero strong {
+  color: var(--fin-gold);
+}
+
+/* Gráfico: barras douradas. */
+.fin-theme .fin-bar-value {
+  color: var(--fin-ink);
+}
+.fin-theme .fin-bar {
+  background: linear-gradient(180deg, var(--fin-gold), var(--fin-gold-deep));
+}
+.fin-theme .fin-bar-zero {
+  background: var(--fin-line);
+}
+.fin-theme .fin-bar-day {
+  color: var(--fin-ink);
+}
+.fin-theme .fin-bar-date {
+  color: var(--fin-muted);
+}
+
+/* Cartão por garçom: selo de % dourado, "fica" em dourado. */
+.fin-theme .fin-waiter-card {
+  background: var(--fin-card-2);
+  border-color: var(--fin-line);
+}
+.fin-theme .fin-waiter-top {
+  border-bottom-color: var(--fin-line);
+}
+.fin-theme .fin-waiter-name {
+  color: var(--fin-ink);
+}
+.fin-theme .fin-waiter-pct {
+  background: var(--fin-gold);
+  color: var(--fin-bg);
+}
+.fin-theme .fin-kv span {
+  color: var(--fin-muted);
+}
+.fin-theme .fin-kv strong {
+  color: var(--fin-ink);
+}
+.fin-theme .fin-kv-total {
+  border-top-color: var(--fin-line);
+}
+.fin-theme .fin-kv-total strong {
+  color: var(--fin-gold);
+}
+
+/* Cartão por conta fechada. */
+.fin-theme .fin-bill-card {
+  background: var(--fin-card-2);
+  border-color: var(--fin-line);
+}
+.fin-theme .fin-bill-table {
+  color: var(--fin-ink);
+}
+.fin-theme .fin-bill-total {
+  color: var(--fin-ink);
+}
+.fin-theme .fin-bill-meta {
+  color: var(--fin-muted);
+}
+.fin-theme .fin-bill-detail {
+  color: var(--fin-muted);
+  border-top-color: var(--fin-line);
+}
+
+/* Vazios, botões, cartão de dia encerrado e avisos. */
+.fin-theme .empty {
+  color: var(--fin-muted);
+}
+.fin-theme .btn-dark {
+  background: var(--fin-orange);
+  color: #fff;
+}
+.fin-theme .btn-purple {
+  background: var(--fin-orange);
+  color: #fff;
+}
+.fin-theme .btn-purple:active {
+  background: var(--fin-orange-dark);
+}
+.fin-theme .btn-ghost {
+  background: transparent;
+  color: var(--fin-ink);
+  border-color: var(--fin-line);
+}
+.fin-theme .card {
+  background: var(--fin-card-2);
+  border-color: var(--fin-line);
+}
+.fin-theme .card h3 {
+  color: var(--fin-ink);
+}
+.fin-theme .card .hint {
+  color: var(--fin-muted);
+}
+.fin-theme .error {
+  background: rgba(179, 38, 30, 0.2);
+  color: #ffb4ab;
+  border-color: #7a2a24;
+}
+.fin-theme .ok-note {
+  background: rgba(67, 160, 71, 0.16);
+  color: #a5d6a7;
+  border-color: #2f6b33;
+}
+
+/* Modal de Finalizar dia (dentro do Financeiro): escuro também. */
+.fin-theme .modal {
+  background: var(--fin-card);
+  color: var(--fin-ink);
+}
+.fin-theme .modal h3 {
+  color: var(--fin-ink);
+}
+.fin-theme .modal .hint {
+  color: var(--fin-muted);
+}
+.fin-theme .modal .stat-card {
+  background: var(--fin-card-2);
+  border-color: var(--fin-line);
+}
+.fin-theme .modal .stat-card span {
+  color: var(--fin-muted);
+}
+.fin-theme .modal .stat-card strong {
+  color: var(--fin-ink);
+}
+.fin-theme .modal .section-title {
+  color: var(--fin-gold);
+}
+.fin-theme .modal .item-row {
+  background: var(--fin-card-2);
+  border-color: var(--fin-line);
+}
+.fin-theme .modal .item-row .note-line {
+  color: var(--fin-muted);
 }
 
 /* Estado ativo genérico do controle segmentado (filtro de período) */
@@ -2258,8 +2995,116 @@ select {
 }
 
 /* ------------------------------------------------------------------ */
+/* Cardápio por foto (OCR) — prévia da foto e linhas da revisão        */
+/* ------------------------------------------------------------------ */
+
+.ocr-preview {
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: 10px;
+  margin: 8px 0;
+}
+
+.ocr-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.ocr-row {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.ocr-row-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ocr-row-head input[type='checkbox'] {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  accent-color: var(--orange);
+}
+
+.ocr-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 700;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 2px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+}
+
+.ocr-exists {
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  color: #7a4a00;
+  background: #ffe1a8;
+  border-radius: 999px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.fin-theme .ocr-row {
+  border-color: var(--fin-line);
+  background: var(--fin-card-2);
+}
+
+.fin-theme .ocr-name {
+  border-color: var(--fin-line);
+  background: var(--fin-bg);
+  color: var(--fin-ink);
+}
+
+.fin-theme .ocr-name:focus {
+  outline: 2px solid var(--fin-gold);
+  border-color: var(--fin-gold);
+}
+
+.fin-theme .ocr-row-head input[type='checkbox'] {
+  accent-color: var(--fin-orange);
+}
+
+.fin-theme .ocr-exists {
+  color: #1d130a;
+  background: var(--fin-gold);
+}
+
+/* ------------------------------------------------------------------ */
 /* Impressoras térmicas — Ajustes do dono + central de impressão       */
 /* ------------------------------------------------------------------ */
+
+.printer-sector {
+  margin: 16px 0;
+}
+
+.printer-sector > strong {
+  display: block;
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+.printer-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.printer-card-head > strong {
+  font-size: 15px;
+}
 
 .printer-card {
   border: 1px solid #e5e0d8;
@@ -2273,6 +3118,31 @@ select {
   display: block;
   font-size: 15px;
   margin-bottom: 4px;
+}
+
+/* Linha de uma impressora dentro do status do setor (central). */
+.printer-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px dashed #e5e0d8;
+}
+
+.printer-status-row:first-of-type {
+  border-top: none;
+}
+
+.printer-bt-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.printer-bt-btns .btn {
+  white-space: nowrap;
 }
 
 .printer-status {

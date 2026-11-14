@@ -26,6 +26,8 @@ globalThis.window = {
 
 const store = await import(new URL('../src/lib/store.ts', import.meta.url));
 const escpos = await import(new URL('../src/lib/escpos.ts', import.meta.url));
+const types = await import(new URL('../src/lib/types.ts', import.meta.url));
+const menuOcr = await import(new URL('../src/lib/menuOcr.ts', import.meta.url));
 const pageSrc = readFileSync(path.join(ROOT, 'src/app/page.tsx'), 'utf8');
 const admSrc = readFileSync(path.join(ROOT, 'src/app/adm/page.tsx'), 'utf8');
 const storeSrc = readFileSync(path.join(ROOT, 'src/lib/store.ts'), 'utf8');
@@ -400,7 +402,7 @@ section('8 · Fonte: área do dono');
   has(sqlSrc, 'add column if not exists', 'SQL: compatível com banco antigo');
   has(sqlSrc, 'dono_all_owners', 'SQL: policy RLS owners');
   has(cssSrc, '.owner-link', 'CSS: link do dono');
-  has(cssSrc, '.owner-tabs', 'CSS: abas do dono');
+  has(cssSrc, '.owner-menu', 'CSS: menu ⋯ do dono');
   has(cssSrc, '.stat-grid', 'CSS: cartões do dashboard');
   // Fechamento: só a via do balcão (CONTA) aparece; cozinha/bar só no envio.
   has(pageSrc, "data.kind === 'send' && data.kitchen.length > 0", 'fechamento: via da cozinha só aparece no envio');
@@ -1607,19 +1609,21 @@ section('21 · Port do artefato');
 
   // Área do dono: cabeçalho, menu e dashboard.
   has(pageSrc, 'Menu do dono', 'dono: nav "Menu do dono"');
-  has(pageSrc, "tab === 'dashboard'", 'dono: aba Início');
-  has(pageSrc, '<h1>Financeiro</h1>', 'dono: cabeçalho "Financeiro"');
+  has(pageSrc, "home: 'Início'", 'dono: aba Início');
+  has(pageSrc, "dashboard: 'Financeiro'", 'dono: cabeçalho "Financeiro"');
   check(
     'dono: sem aba separada de QR (QR vive na aba Garçons)',
     !pageSrc.includes("'owner-qr'") && !pageSrc.includes('OwnerQrView'),
   );
   check(
-    'dono: abas são Início, Garçons, Cardápio e Ajustes (sem Dashboard/QR Code)',
-    pageSrc.includes("tab === 'dashboard'") &&
-      pageSrc.includes("tab === 'waiters'") &&
-      pageSrc.includes("tab === 'menu'") &&
-      pageSrc.includes("tab === 'settings'") &&
+    'dono: telas são Início, Financeiro, Garçons, Cardápio e Ajustes (sem QR Code)',
+    pageSrc.includes("tab: 'home'") &&
+      pageSrc.includes("tab: 'dashboard'") &&
+      pageSrc.includes("tab: 'waiters'") &&
+      pageSrc.includes("tab: 'menu'") &&
+      pageSrc.includes("tab: 'settings'") &&
       pageSrc.includes('Início') &&
+      pageSrc.includes('Financeiro') &&
       pageSrc.includes('Garçons') &&
       pageSrc.includes('Cardápio') &&
       pageSrc.includes('Ajustes') &&
@@ -1630,10 +1634,10 @@ section('21 · Port do artefato');
     cssSrc.includes('.app-owner') && cssSrc.includes('max-width: 768px'),
   );
   has(dashSrc, 'conta', 'dashboard: total vendido com nº de contas');
-  has(dashSrc, 'stat-card highlight', 'dashboard: "Fica pro restaurante" em destaque');
+  has(dashSrc, 'fin-summary-hero', 'dashboard: "Fica pro restaurante" em destaque');
   has(dashSrc, 'Nenhuma conta fechada neste período.', 'dashboard: texto de vazio');
   has(dashSrc, 'a venda aparece aqui sozinha', 'dashboard: texto de vazio (continuação)');
-  has(dashSrc, 'Comissão (', 'dashboard: "Comissão (8%): R$" por garçom');
+  has(dashSrc, 'Comissão a receber', 'dashboard: comissão por garçom no cartão');
   has(dashSrc, 'btn-dark', 'dashboard: "Finalizar dia" escuro (#2a1e33)');
   has(dashSrc, 'Dia encerrado', 'dashboard: cartão "Dia encerrado"');
   has(dashSrc, 'Total a pagar aos garçons', 'dashboard: modal "Total a pagar aos garçons"');
@@ -1655,7 +1659,7 @@ section('21 · Port do artefato');
   has(waitersSrc, 'Usuário (pra entrar)', 'garçons: campo "Usuário (pra entrar)"');
   has(waitersSrc, 'Comissão dele (%)', 'garçons: campo "Comissão dele (%)"');
   has(waitersSrc, 'vendeu R$ 200 com comissão de 8%', 'garçons: nota do exemplo R$ 200');
-  has(waitersSrc, 'usuário: ', 'garçons: linha "usuário: X · comissão 8%"');
+  has(waitersSrc, '<span>usuário</span>', 'garçons: cartão mostra o usuário');
   has(waitersSrc, 'Remover o acesso de ', 'garçons: confirmação de remover');
   has(waitersSrc, 'Remover mesmo', 'garçons: botão "Remover mesmo"');
   has(waitersSrc, 'Editar ${', 'garçons: formulário "Editar <nome>"');
@@ -1795,8 +1799,8 @@ section('22 · Sem tela de primeiro acesso');
   );
   has(
     enterOwnerSrc,
-    "setView(isPrintCenterParam() ? 'print-center' : 'owner')",
-    'enterOwnerArea vai pro painel (ou pra central, no ?central=impressao)',
+    "setView(isPrintCenterParam() ? 'print-center' : 'owner-home')",
+    'enterOwnerArea vai pra Home (ou pra central, no ?central=impressao)',
   );
   notHas(enterOwnerSrc, "'setup'", 'enterOwnerArea sem setup');
 
@@ -1809,8 +1813,8 @@ section('22 · Sem tela de primeiro acesso');
   );
   has(
     bootSrc,
-    "setView(isPrintCenterParam() ? 'print-center' : 'owner')",
-    'boot do dono vai pro painel (ou pra central, no ?central=impressao)',
+    "setView(isPrintCenterParam() ? 'print-center' : 'owner-home')",
+    'boot do dono vai pra Home (ou pra central, no ?central=impressao)',
   );
   // O 'setup' que resta no boot é o modo do acesso do admin (/adm),
   // não a tela de primeiro acesso: a restauração do dono não tem setup.
@@ -1832,8 +1836,8 @@ section('22 · Sem tela de primeiro acesso');
     'O cardápio está vazio.',
     'aba Cardápio tem estado vazio',
   );
-  has(pageSrc, "tab === 'waiters'", 'painel tem aba Garçons');
-  has(pageSrc, "tab === 'menu'", 'painel tem aba Cardápio');
+  has(pageSrc, "tab: 'waiters'", 'painel tem aba Garçons');
+  has(pageSrc, "tab: 'menu'", 'painel tem aba Cardápio');
 
   // Funcional (modo local): restaurante novo com 0 garçons e 0 produtos
   // — o dono entra mesmo assim e cadastra garçom e produto pelas abas.
@@ -2733,41 +2737,57 @@ section('28 · Impressão automática (Parte 4 — impressoras)');
   const allRestaurants = await store.listRestaurants();
   const rid28 = allRestaurants[0]?.id ?? '';
   store.setActiveRestaurant(rid28);
-  check(
-    'impressoras: nenhuma cadastrada no início',
-    (await store.getPrinterConfig()).length === 0,
-  );
+  {
+    const empty28 = await store.getPrinterConfig();
+    check(
+      'impressoras: nenhuma cadastrada no início',
+      empty28.kitchen.length === 0 &&
+        empty28.bar.length === 0 &&
+        empty28.counter.length === 0,
+    );
+  }
   const feeBefore = (await store.getSettings()).service_fee_pct;
-  await store.savePrinterConfig([
-    {
-      sector: 'kitchen',
-      name: 'Bematech cozinha',
-      connection: 'usb',
-      bridge: 'computer',
-      enabled: true,
-    },
-    {
-      sector: 'bar',
-      name: 'Elgin bar',
-      connection: 'bluetooth',
-      bridge: 'phone',
-      enabled: true,
-    },
-    {
-      sector: 'counter',
-      name: 'Daruma balcão',
-      connection: 'wifi',
-      bridge: 'computer',
-      enabled: true,
-    },
-  ]);
+  await store.savePrinterConfig({
+    kitchen: [
+      {
+        id: 'p-cozinha-1',
+        sector: 'kitchen',
+        name: 'Bematech cozinha',
+        connection: 'usb',
+        bridge: 'computer',
+        enabled: true,
+      },
+    ],
+    bar: [
+      {
+        id: 'p-bar-1',
+        sector: 'bar',
+        name: 'Elgin bar',
+        connection: 'bluetooth',
+        bridge: 'phone',
+        enabled: true,
+      },
+    ],
+    counter: [
+      {
+        id: 'p-balcao-1',
+        sector: 'counter',
+        name: 'Daruma balcão',
+        connection: 'wifi',
+        bridge: 'computer',
+        enabled: true,
+      },
+    ],
+  });
   const cfg28 = await store.getPrinterConfig();
   check(
     'impressoras: 3 setores salvos com ponte e ligação',
-    cfg28.length === 3 &&
-      cfg28.find((p) => p.sector === 'kitchen')?.bridge === 'computer' &&
-      cfg28.find((p) => p.sector === 'bar')?.bridge === 'phone' &&
-      cfg28.find((p) => p.sector === 'counter')?.connection === 'wifi',
+    cfg28.kitchen.length === 1 &&
+      cfg28.bar.length === 1 &&
+      cfg28.counter.length === 1 &&
+      cfg28.kitchen[0]?.bridge === 'computer' &&
+      cfg28.bar[0]?.bridge === 'phone' &&
+      cfg28.counter[0]?.connection === 'wifi',
   );
   check(
     'impressoras: salvar não muda os outros ajustes',
@@ -2843,9 +2863,12 @@ section('28 · Impressão automática (Parte 4 — impressoras)');
       'fila: outro restaurante não vê as vias deste',
       (await store.listPrintJobs()).length === 0,
     );
+    const otherCfg = await store.getPrinterConfig();
     check(
       'impressoras: outro restaurante não vê a config deste',
-      (await store.getPrinterConfig()).length === 0,
+      otherCfg.kitchen.length === 0 &&
+        otherCfg.bar.length === 0 &&
+        otherCfg.counter.length === 0,
     );
     store.setActiveRestaurant(rid28);
   }
@@ -2866,7 +2889,13 @@ section('28 · Impressão automática (Parte 4 — impressoras)');
   has(pageSrc, 'Celular na central', 'ponte: celular na central');
   has(pageSrc, 'Bluetooth', 'ligação Bluetooth oferecida');
   has(pageSrc, 'Wi-Fi ou rede', 'ligação Wi-Fi/rede oferecida');
-  has(pageSrc, 'Testar', 'botão Testar por setor');
+  has(pageSrc, 'Testar', 'botão Testar por impressora');
+  has(pageSrc, 'Adicionar impressora', 'botão Adicionar impressora por setor');
+  has(pageSrc, 'Remover', 'botão Remover por impressora');
+  check(
+    'área Impressoras: sem rascunho único por setor (listas por setor)',
+    !pageSrc.includes('setDraftSector'),
+  );
   has(
     pageSrc,
     'Abrir central de impressão',
@@ -3035,6 +3064,931 @@ section('29 · Logo ComandaJá (versão 2 aprovada)');
     'icons: { icon: COMANDAJA_LOGO }',
     'favicon: logo no metadata',
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* 30 · Financeiro do dono — blocos separados (redesign 12/11)         */
+/* ------------------------------------------------------------------ */
+section('30 · Financeiro do dono — blocos separados');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  // Seções com título próprio — nada mais corrido numa lista só.
+  has(pageSrc, 'Resumo do período', 'financeiro: seção Resumo do período');
+  has(pageSrc, 'Por garçom', 'financeiro: seção Por garçom');
+  has(pageSrc, 'Contas fechadas (', 'financeiro: seção Contas fechadas');
+  has(pageSrc, 'Fechar o dia', 'financeiro: seção Fechar o dia');
+  // Resumo: dois cartões + destaque do restaurante.
+  has(pageSrc, 'className="fin-summary-grid"', 'financeiro: grade de resumo com 2 cartões');
+  has(pageSrc, 'className="fin-summary-hero"', 'financeiro: destaque Fica pro restaurante');
+  // O gráfico de vendas mora na Home (Início) — não mais no Resumo:
+  // "Vendas por dia" aparece só lá (título + aria-label do gráfico).
+  check(
+    'financeiro: gráfico saiu do Resumo (só existe na Home)',
+    (pageSrc.match(/Vendas por dia/g) || []).length === 2 &&
+      pageSrc.indexOf('Vendas por dia') >
+        pageSrc.indexOf('function OwnerHomeView') &&
+      pageSrc.lastIndexOf('Vendas por dia') <
+        pageSrc.indexOf('function OwnerDashboardView'),
+  );
+  check(
+    'financeiro: sem lib de gráfico nova',
+    !/chart\.js|recharts|victory|nivo/.test(pageSrc),
+  );
+  // Cartão por garçom (nome, % e os 3 valores) e por conta fechada.
+  has(pageSrc, 'className="fin-waiter-card"', 'financeiro: cartão por garçom');
+  has(pageSrc, 'Comissão a receber', 'financeiro: comissão a receber no cartão');
+  has(pageSrc, 'className="fin-bill-card"', 'financeiro: cartão por conta fechada');
+  has(pageSrc, 'fin-bill-detail', 'financeiro: conta mostra subtotal, taxa e comissão');
+  // Regras intactas — nada sumiu no redesign.
+  has(pageSrc, 'Finalizar dia', 'financeiro: botão Finalizar dia intacto');
+  has(pageSrc, 'Reabrir dia', 'financeiro: botão Reabrir dia intacto');
+  has(pageSrc, 'Quanto pagar pra cada garçom', 'financeiro: resumo do modal intacto');
+  has(pageSrc, 'Nenhuma conta fechada neste período', 'financeiro: estado vazio de contas intacto');
+  has(pageSrc, 'Nenhum garçom cadastrado', 'financeiro: estado vazio de garçons intacto');
+  has(pageSrc, 'Atualizar', 'financeiro: botão Atualizar intacto');
+  // Gráfico: o total de hoje bate com o vendido (4 contas de hoje:
+  // R$ 503,00 das seções 5/6 + R$ 412,00 da regressão da seção 7).
+  {
+    const bills = await store.listClosedBills();
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const todayBills = bills.filter((b) => new Date(b.closed_at) >= start);
+    const todayTotal = todayBills.reduce((s, b) => s + b.total_cents, 0);
+    check('gráfico: 4 contas fechadas hoje', todayBills.length === 4);
+    check('gráfico: total de hoje bate com o vendido', todayTotal === 91500);
+  }
+  // CSS dos blocos.
+  check(
+    'CSS: .fin-section com borda e sombra',
+    /\.fin-section \{[^}]*border: 1px solid var\(--line\);[^}]*box-shadow:/.test(cssSrc),
+  );
+  check(
+    'CSS: destaque do resumo 28px roxo',
+    /\.fin-summary-hero strong \{[^}]*font-size: 28px;[^}]*color: var\(--purple\)/.test(cssSrc),
+  );
+  check(
+    'CSS: barras do gráfico com gradiente roxo',
+    /\.fin-bar \{[^}]*background: linear-gradient\(180deg, var\(--purple\), var\(--purple-dark\)\)/.test(cssSrc),
+  );
+  check(
+    'CSS: cartão do garçom com separador',
+    /\.fin-waiter-top \{[^}]*border-bottom: 1px solid var\(--line\)/.test(cssSrc),
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 31 · Financeiro — 3 telas: Resumo | Garçons | Contas (12/11)       */
+/* ------------------------------------------------------------------ */
+section('31 · Financeiro — 3 telas: Resumo, Garçons e Contas');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  // Estado da sub-aba, padrão Resumo.
+  check(
+    'financeiro: sub-aba começa em Resumo',
+    /useState<'resumo' \| 'garcons' \| 'contas'>\(\s*'resumo',\s*\)/.test(pageSrc),
+  );
+  // Barra de abinhas logo abaixo do filtro de período.
+  has(pageSrc, 'className="fin-tabs"', 'financeiro: barra de abinhas');
+  has(pageSrc, 'role="tablist"', 'financeiro: abinhas com papel de tablist');
+  has(pageSrc, "['resumo', 'Resumo']", 'financeiro: aba Resumo');
+  has(pageSrc, "['garcons', 'Garçons']", 'financeiro: aba Garçons');
+  has(pageSrc, "['contas', 'Contas']", 'financeiro: aba Contas');
+  check(
+    'financeiro: abinhas depois do filtro de período',
+    pageSrc.indexOf('fin-tabs') >
+      pageSrc.indexOf("['today', '7d', '30d', 'all']"),
+  );
+  // Só uma tela por vez — cada bloco atrás do seu condicional.
+  has(pageSrc, "finTab === 'resumo'", 'financeiro: tela Resumo condicional');
+  has(pageSrc, "finTab === 'garcons'", 'financeiro: tela Garçons condicional');
+  has(pageSrc, "finTab === 'contas'", 'financeiro: tela Contas condicional');
+  check(
+    'financeiro: Resumo tem 2 blocos condicionais (resumo e Fechar o dia)',
+    pageSrc.split("finTab === 'resumo'").length - 1 === 2,
+  );
+  {
+    const lastResumo = pageSrc.lastIndexOf("finTab === 'resumo'");
+    check(
+      'financeiro: Fechar o dia fica na tela Resumo',
+      lastResumo > 0 &&
+        pageSrc.slice(lastResumo, lastResumo + 400).includes('Fechar o dia'),
+    );
+  }
+  // CSS das abinhas (base clara; o tema escuro vem na seção 32).
+  check(
+    'CSS: .fin-tabs em linha com 3 botões',
+    /\.fin-tabs \{[^}]*display: flex;[^}]*gap: 8px;/.test(cssSrc),
+  );
+  check(
+    'CSS: abinha selecionada roxa na base',
+    /\.fin-tabs button\.on \{[^}]*border-color: var\(--purple\)/.test(cssSrc),
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 32 · Financeiro — paleta ComandaJá: escuro, dourado, laranja (12/11)*/
+/* ------------------------------------------------------------------ */
+section('32 · Financeiro — paleta ComandaJá (escuro, dourado, laranja)');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  // Escopo: a raiz das 5 telas do dono carrega o tema (Início,
+  // Financeiro, Garçons, Cardápio e Ajustes) — a central de
+  // impressão, o fluxo do garçom e a apresentação ficam fora.
+  has(
+    pageSrc,
+    'className="app app-owner fin-theme"',
+    'painel do dono: tema aplicado na raiz das telas do dono',
+  );
+  check(
+    'painel do dono: fin-theme nas 5 telas do dono (e em nenhuma outra)',
+    (pageSrc.match(/app app-owner fin-theme/g) || []).length === 5,
+  );
+  // Variáveis da paleta.
+  check(
+    'CSS: fundo escuro #17110c (igual à apresentação)',
+    /\.fin-theme \{[^}]*--fin-bg: #17110c;/.test(cssSrc),
+  );
+  check(
+    'CSS: dourado da logo #e8c15a',
+    /--fin-gold: #e8c15a;/.test(cssSrc),
+  );
+  check(
+    'CSS: laranja do CTA #f26a3d',
+    /--fin-orange: #f26a3d;/.test(cssSrc),
+  );
+  check(
+    'CSS: raiz do financeiro com fundo escuro',
+    /\.fin-theme \{[^}]*background: var\(--fin-bg\)/.test(cssSrc),
+  );
+  // Blocos e cartões escuros; títulos em dourado.
+  check(
+    'CSS: bloco do financeiro escuro',
+    /\.fin-theme \.fin-section \{[^}]*background: var\(--fin-card\)/.test(cssSrc),
+  );
+  check(
+    'CSS: título de seção dourado',
+    /\.fin-theme \.fin-section-title \{[^}]*color: var\(--fin-gold\)/.test(cssSrc),
+  );
+  check(
+    'CSS: destaque Fica pro restaurante dourado',
+    /\.fin-theme \.fin-summary-hero strong \{[^}]*color: var\(--fin-gold\)/.test(cssSrc),
+  );
+  // Gráfico dourado, selo de % dourado.
+  check(
+    'CSS: barras do gráfico douradas',
+    /\.fin-theme \.fin-bar \{[^}]*background: linear-gradient\(180deg, var\(--fin-gold\), var\(--fin-gold-deep\)\)/.test(cssSrc),
+  );
+  check(
+    'CSS: selo de % do garçom dourado',
+    /\.fin-theme \.fin-waiter-pct \{[^}]*background: var\(--fin-gold\)/.test(cssSrc),
+  );
+  // Laranja nos botões principais e nos selecionados.
+  check(
+    'CSS: Finalizar dia laranja',
+    /\.fin-theme \.btn-dark \{[^}]*background: var\(--fin-orange\)/.test(cssSrc),
+  );
+  check(
+    'CSS: abinha selecionada laranja',
+    /\.fin-theme \.fin-tabs button\.on \{[^}]*background: var\(--fin-orange\)/.test(cssSrc),
+  );
+  check(
+    'CSS: filtro de período selecionado laranja',
+    /\.fin-theme \.seg button\.on \{[^}]*background: var\(--fin-orange\)/.test(cssSrc),
+  );
+  // Modal escuro também.
+  check(
+    'CSS: modal do Finalizar dia escuro',
+    /\.fin-theme \.modal \{[^}]*background: var\(--fin-card\)/.test(cssSrc),
+  );
+  // O tema não vazou pra base: os blocos continuam brancos fora dele.
+  check(
+    'CSS: base .fin-section continua branca (tema só na área do dono)',
+    /\.fin-section \{[^}]*background: #fff;/.test(cssSrc),
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 33 · Painel do dono — Home + menu ⋯ + blocos profissionais (12/11)  */
+/* ------------------------------------------------------------------ */
+section('33 · Painel do dono — Home, menu ⋯ e blocos profissionais');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  // Home: primeira tela do dono.
+  has(pageSrc, 'function OwnerHomeView', 'home: componente OwnerHomeView');
+  has(pageSrc, "view === 'owner-home'", 'home: rota de renderização');
+  has(pageSrc, "| 'owner-home'", 'home: tela no tipo View');
+  check(
+    'home: dono cai na Home ao entrar (login e sessão restaurada)',
+    (pageSrc.match(
+      /setView\(isPrintCenterParam\(\) \? 'print-center' : 'owner-home'\)/g,
+    ) || []).length === 2,
+  );
+  // Conteúdo da Home: só vendas — total de hoje, total de 7 dias, gráfico.
+  has(pageSrc, 'Total vendido hoje', 'home: total de hoje em destaque');
+  has(pageSrc, 'Últimos 7 dias', 'home: seção dos últimos 7 dias');
+  has(pageSrc, 'Vendas por dia', 'home: seção Vendas por dia');
+  has(pageSrc, 'className="fin-chart"', 'home: gráfico de barras em divs');
+  has(pageSrc, 'fin-bar-value', 'home: valor em cima de cada barra');
+  has(pageSrc, 'chartDays', 'home: totais por dia dos últimos 7 dias');
+  has(pageSrc, 'chartMax', 'home: altura relativa ao maior dia');
+  // Nada de garçons, lista de contas ou fechar o dia na Home.
+  {
+    const start = pageSrc.indexOf('function OwnerHomeView');
+    const end = pageSrc.indexOf('function OwnerDashboardView');
+    const home = pageSrc.slice(start, end);
+    check('home: sem Fechar o dia', !home.includes('Fechar o dia'));
+    check('home: sem Por garçom', !home.includes('Por garçom'));
+    check('home: sem lista de contas', !home.includes('fin-bill-card'));
+    check('home: sem cartão por garçom', !home.includes('fin-waiter-card'));
+  }
+  // Menu ⋯: botões em pílula fora, tudo dentro do menu.
+  check(
+    'menu ⋯: sem botões em pílula no topo (owner-tabs removido)',
+    !pageSrc.includes('owner-tabs') && !pageSrc.includes('owner-nav-label'),
+  );
+  has(pageSrc, 'className="owner-menu-btn"', 'menu ⋯: botão de 3 pontinhos');
+  has(pageSrc, '⋯', 'menu ⋯: reticências no botão');
+  has(pageSrc, 'className="owner-menu"', 'menu ⋯: dropdown do menu');
+  has(pageSrc, 'OWNER_MENU', 'menu ⋯: lista de itens do menu');
+  has(
+    pageSrc,
+    "{ tab: 'home', label: 'Início', view: 'owner-home' }",
+    'menu ⋯: item Início',
+  );
+  has(
+    pageSrc,
+    "{ tab: 'dashboard', label: 'Financeiro', view: 'owner' }",
+    'menu ⋯: item Financeiro',
+  );
+  has(
+    pageSrc,
+    "{ tab: 'waiters', label: 'Garçons', view: 'owner-waiters' }",
+    'menu ⋯: item Garçons',
+  );
+  has(
+    pageSrc,
+    "{ tab: 'menu', label: 'Cardápio', view: 'owner-menu' }",
+    'menu ⋯: item Cardápio',
+  );
+  has(
+    pageSrc,
+    "{ tab: 'settings', label: 'Ajustes', view: 'owner-settings' }",
+    'menu ⋯: item Ajustes',
+  );
+  check(
+    'menu ⋯: escolher uma tela fecha o menu',
+    (pageSrc.match(/setMenuOpen\(false\)/g) || []).length >= 3,
+  );
+  has(pageSrc, 'owner-menu-backdrop', 'menu ⋯: fecha ao tocar fora');
+  has(pageSrc, "e.key === 'Escape'", 'menu ⋯: fecha com Escape');
+  // Cabeçalho com logo + título da tela atual.
+  has(pageSrc, 'className="owner-logo"', 'cabeçalho: emblema da logo');
+  has(pageSrc, 'OWNER_TITLES', 'cabeçalho: título por tela');
+  has(pageSrc, "home: 'Início'", 'cabeçalho: título Início');
+  has(pageSrc, "dashboard: 'Financeiro'", 'cabeçalho: título Financeiro');
+  // Cartão por garçom.
+  has(pageSrc, 'className="own-waiter-card"', 'garçons: cartão por garçom');
+  has(pageSrc, 'own-waiter-pct', 'garçons: selo de % de comissão');
+  has(pageSrc, 'className="own-kv"', 'garçons: linha usuário');
+  // Cartão de produto (modo detalhado).
+  has(pageSrc, 'detailed', 'cardápio: modo detalhado no ProductListGrouped');
+  has(pageSrc, 'className="own-prod-card"', 'cardápio: cartão por produto');
+  has(pageSrc, 'own-prod-price', 'cardápio: preço dourado no cartão');
+  has(pageSrc, 'p.description', 'cardápio: "o que vem no prato" no cartão');
+  check(
+    'cardápio: linha compacta intacta na tela de pedir',
+    pageSrc.includes('className="prod-list-item"'),
+  );
+  // CSS do painel profissional.
+  check(
+    'CSS: emblema do cabeçalho 40px e redondo com aro dourado',
+    /\.fin-theme \.owner-logo \{[^}]*width: 40px;[^}]*border: 2px solid var\(--fin-gold\)/.test(
+      cssSrc,
+    ),
+  );
+  check(
+    'CSS: botão ⋯ com 44px de toque',
+    /\.fin-theme \.owner-menu-btn \{[^}]*width: 44px;[^}]*height: 44px;/.test(
+      cssSrc,
+    ),
+  );
+  check(
+    'CSS: item do menu ⋯ com 48px de toque',
+    /\.fin-theme \.owner-menu button \{[^}]*min-height: 48px;/.test(cssSrc),
+  );
+  check(
+    'CSS: item selecionado do menu ⋯ laranja',
+    /\.fin-theme \.owner-menu button\.on \{[^}]*background: var\(--fin-orange\)/.test(
+      cssSrc,
+    ),
+  );
+  check(
+    'CSS: cartão do garçom escuro',
+    /\.fin-theme \.own-waiter-card,[^}]*\{[^}]*background: var\(--fin-card-2\)/.test(
+      cssSrc,
+    ),
+  );
+  check(
+    'CSS: cartão do produto escuro',
+    /\.fin-theme \.own-prod-card/.test(cssSrc),
+  );
+  check(
+    'CSS: título dos blocos dourado',
+    /\.fin-theme \.card h2 \{[^}]*color: var\(--fin-gold\)/.test(cssSrc),
+  );
+  check(
+    'CSS: campo do formulário escuro',
+    /\.fin-theme \.field input,/.test(cssSrc),
+  );
+  check(
+    'CSS: checkbox do campo não ocupa a linha toda',
+    /\.field input\[type='checkbox'\] \{[^}]*width: auto;/.test(cssSrc),
+  );
+  check(
+    'CSS: cartão da impressora escuro',
+    /\.fin-theme \.printer-card \{[^}]*background: var\(--fin-card-2\)/.test(
+      cssSrc,
+    ),
+  );
+}
+
+section('34 · Várias impressoras por setor');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+
+  // --- normalizePrinters: migração sem perder a config antiga.
+  const legacy = types.normalizePrinters([
+    {
+      sector: 'kitchen',
+      name: 'A',
+      connection: 'usb',
+      bridge: 'computer',
+      enabled: true,
+    },
+    {
+      sector: 'bar',
+      name: 'B',
+      connection: 'bluetooth',
+      bridge: 'phone',
+      enabled: false,
+    },
+    {
+      sector: 'kitchen',
+      name: 'C',
+      connection: 'wifi',
+      bridge: 'computer',
+      enabled: true,
+    },
+  ]);
+  check(
+    'migração: lista única vira listas por setor',
+    legacy.kitchen.length === 2 &&
+      legacy.bar.length === 1 &&
+      legacy.counter.length === 0,
+  );
+  check(
+    'migração: id gerado quando falta',
+    [...legacy.kitchen, ...legacy.bar].every(
+      (p) => typeof p.id === 'string' && p.id.length > 0,
+    ),
+  );
+  check(
+    'migração: ids distintos',
+    new Set([...legacy.kitchen, ...legacy.bar].map((p) => p.id)).size === 3,
+  );
+  const singleObj = types.normalizePrinters({
+    kitchen: {
+      sector: 'kitchen',
+      id: 'x1',
+      name: 'A',
+      connection: 'usb',
+      bridge: 'computer',
+      enabled: true,
+    },
+    bar: null,
+  });
+  check(
+    'migração: objeto único por setor vira lista de 1 (id mantido)',
+    singleObj.kitchen.length === 1 &&
+      singleObj.kitchen[0].id === 'x1' &&
+      singleObj.bar.length === 0,
+  );
+  const one = types.normalizePrinters({
+    sector: 'counter',
+    name: 'D',
+    connection: 'wifi',
+    bridge: 'computer',
+    enabled: true,
+  });
+  check(
+    'migração: objeto único de impressora vira lista de 1 no setor dele',
+    one.counter.length === 1 && one.kitchen.length === 0,
+  );
+  const kept = types.normalizePrinters({
+    kitchen: [
+      {
+        id: 'k1',
+        sector: 'kitchen',
+        name: 'A',
+        connection: 'usb',
+        bridge: 'computer',
+        enabled: true,
+      },
+    ],
+    bar: [],
+    counter: [],
+  });
+  check(
+    'migração: formato novo passa intacto (id mantido)',
+    kept.kitchen.length === 1 && kept.kitchen[0].id === 'k1',
+  );
+  check(
+    'migração: nulo vira listas vazias',
+    (() => {
+      const e = types.normalizePrinters(null);
+      return (
+        e.kitchen.length === 0 && e.bar.length === 0 && e.counter.length === 0
+      );
+    })(),
+  );
+  check(
+    'migração: entrada inválida é descartada',
+    types.normalizePrinters([{ name: 'X' }, 'lixo', 42, null]).kitchen
+      .length === 0,
+  );
+
+  // --- printerTargetsForJob: fan-out puro (o que a central usa).
+  const cfgT = {
+    kitchen: [
+      {
+        id: 'a',
+        sector: 'kitchen',
+        name: 'A',
+        connection: 'usb',
+        bridge: 'computer',
+        enabled: true,
+      },
+      {
+        id: 'b',
+        sector: 'kitchen',
+        name: 'B',
+        connection: 'bluetooth',
+        bridge: 'phone',
+        enabled: true,
+      },
+      {
+        id: 'c',
+        sector: 'kitchen',
+        name: 'C',
+        connection: 'usb',
+        bridge: 'computer',
+        enabled: false,
+      },
+    ],
+    bar: [],
+    counter: [],
+  };
+  check(
+    'fan-out: alvos = ativas do setor, na ordem',
+    types
+      .printerTargetsForJob(cfgT, 'kitchen')
+      .map((p) => p.id)
+      .join(',') === 'a,b',
+  );
+  check(
+    'fan-out: já entregue sai da lista',
+    types
+      .printerTargetsForJob(cfgT, 'kitchen', ['a'])
+      .map((p) => p.id)
+      .join(',') === 'b',
+  );
+  check(
+    'fan-out: setor vazio não tem alvo',
+    types.printerTargetsForJob(cfgT, 'bar').length === 0,
+  );
+  check(
+    'fan-out: desligada nunca é alvo',
+    types
+      .printerTargetsForJob(cfgT, 'kitchen')
+      .every((p) => p.enabled),
+  );
+
+  // --- Store (modo local): 2 impressoras num setor, remover, vazio.
+  const rid34 = (await store.listRestaurants())[0]?.id ?? '';
+  store.setActiveRestaurant(rid34);
+  const k1 = {
+    id: 'k-1',
+    sector: 'kitchen',
+    name: 'Cozinha 1',
+    connection: 'usb',
+    bridge: 'computer',
+    enabled: true,
+  };
+  const k2 = {
+    id: 'k-2',
+    sector: 'kitchen',
+    name: 'Cozinha 2',
+    connection: 'bluetooth',
+    bridge: 'phone',
+    enabled: true,
+  };
+  const b1 = {
+    id: 'b-1',
+    sector: 'bar',
+    name: 'Bar 1',
+    connection: 'bluetooth',
+    bridge: 'phone',
+    enabled: true,
+  };
+  await store.savePrinterConfig({
+    kitchen: [k1, k2],
+    bar: [b1],
+    counter: [],
+  });
+  const cfg34 = await store.getPrinterConfig();
+  check(
+    'várias: 2 impressoras na cozinha',
+    cfg34.kitchen.length === 2 && cfg34.bar.length === 1,
+  );
+  check(
+    'várias: ids estáveis entre salvar e ler',
+    cfg34.kitchen.map((p) => p.id).join(',') === 'k-1,k-2',
+  );
+  await store.savePrinterConfig({ kitchen: [k1], bar: [b1], counter: [] });
+  const cfg34b = await store.getPrinterConfig();
+  check(
+    'várias: remover uma não apaga a outra',
+    cfg34b.kitchen.length === 1 && cfg34b.kitchen[0].id === 'k-1',
+  );
+  check(
+    'várias: setor com zero fica vazio',
+    cfg34b.counter.length === 0,
+  );
+
+  // --- Migração no store: config antiga guardada volta normalizada.
+  const rawDb = JSON.parse(mem.get('garcom_db_v1'));
+  rawDb.settingsByRestaurant[rid34].printers = [
+    {
+      sector: 'kitchen',
+      name: 'Antiga cozinha',
+      connection: 'usb',
+      bridge: 'computer',
+      enabled: true,
+    },
+    {
+      sector: 'counter',
+      name: 'Antigo balcão',
+      connection: 'wifi',
+      bridge: 'computer',
+      enabled: true,
+    },
+  ];
+  mem.set('garcom_db_v1', JSON.stringify(rawDb));
+  const migrated = await store.getPrinterConfig();
+  check(
+    'migração no store: lista antiga vira listas por setor sem perder',
+    migrated.kitchen.length === 1 &&
+      migrated.kitchen[0].name === 'Antiga cozinha' &&
+      migrated.counter.length === 1 &&
+      migrated.counter[0].name === 'Antigo balcão' &&
+      migrated.bar.length === 0,
+  );
+
+  // --- Via de setor com 2 impressoras: enfileira como 1 via (a
+  // central entrega nas 2 — o fan-out é na central, não na fila).
+  await store.savePrinterConfig({
+    kitchen: [k1, k2],
+    bar: [b1],
+    counter: [],
+  });
+  const jobs34 = await store.enqueuePrintJobs([
+    {
+      sector: 'kitchen',
+      kind: 'send',
+      order_number: 99,
+      table_number: 1,
+      waiter_name: 'Ana',
+      items: [{ product_name: 'Casarão 1', qty: 1, price_cents: 3290 }],
+      bill: null,
+    },
+  ]);
+  check(
+    'várias: via do setor com 2 impressoras enfileira como 1 via pendente',
+    jobs34.length === 1 &&
+      (await store.listPrintJobs('pending')).some(
+        (j) => j.id === jobs34[0].id,
+      ),
+  );
+
+  // --- Página + central: listas por setor, fan-out e livro.
+  has(pageSrc, 'Adicionar impressora', 'área: Adicionar impressora por setor');
+  has(pageSrc, 'printer-sector', 'área: bloco do setor com contagem');
+  has(pageSrc, 'printer-card-head', 'área: cartão da impressora com Remover');
+  has(
+    pageSrc,
+    'updatePrinter',
+    'área: edição por impressora (não por setor)',
+  );
+  has(pageSrc, 'removePrinter', 'área: remover uma impressora');
+  has(pageSrc, 'addPrinter', 'área: adicionar impressora no setor');
+  has(pageSrc, 'openTest(cfg)', 'área: Testar por impressora');
+  check(
+    'área: sem rascunho único por setor',
+    !pageSrc.includes('setDraftSector'),
+  );
+  has(pageSrc, 'deliverJob', 'central: entrega da via (fan-out)');
+  has(
+    pageSrc,
+    'printerTargetsForJob',
+    'central: alvos da via por setor',
+  );
+  has(pageSrc, 'central_deliveries_v1', 'central: livro de entregas');
+  has(pageSrc, 'recordDelivered', 'central: registra quem já recebeu');
+  has(pageSrc, 'clearLedger', 'central: reimprimir zera o livro');
+  has(pageSrc, 'printViaComputer', 'central: cópia por impressora no computador');
+  has(pageSrc, 'btCharsRef', 'central: conexão Bluetooth por impressora');
+  has(pageSrc, 'btStateOf', 'central: estado do Bluetooth por impressora');
+  has(pageSrc, 'connectBluetooth(p)', 'central: conectar Bluetooth por impressora');
+  has(pageSrc, 'testBluetooth(p)', 'central: testar Bluetooth por impressora');
+  has(pageSrc, 'Já saiu em', 'central: mostra entrega parcial da via');
+  has(
+    pageSrc,
+    'impressoras neste setor',
+    'central: via mostra quantas impressoras o setor tem',
+  );
+  has(
+    pageSrc,
+    'impressora padrão do sistema',
+    'central: limite honesto do computador (só a padrão)',
+  );
+  has(pageSrc, 'printer-status-row', 'central: linha por impressora no status');
+  check(
+    'central: sem referência única de Bluetooth (btCharRef removido)',
+    !pageSrc.includes('btCharRef'),
+  );
+  check(
+    'central: sem impressão única por setor (find por setor removido)',
+    !pageSrc.includes("printers.find((p) => p.sector"),
+  );
+
+  // --- CSS + store + SQL.
+  has(cssSrc, '.printer-sector', 'CSS: bloco do setor');
+  has(cssSrc, '.printer-card-head', 'CSS: cabeçalho do cartão');
+  has(cssSrc, '.printer-status-row', 'CSS: linha da impressora na central');
+  check(
+    'CSS: cartão da impressora escuro com nome dourado',
+    /\.fin-theme \.printer-card-head > strong \{[^}]*color: var\(--fin-gold\)/.test(
+      cssSrc,
+    ),
+  );
+  has(storeSrc, 'normalizePrinters', 'store: normalização da config antiga');
+  has(storeSrc, 'emptyPrintersConfig', 'store: config vazia por setor');
+  has(
+    storeSrc,
+    'Promise<PrintersConfig>',
+    'store: getPrinterConfig devolve listas por setor',
+  );
+  has(sqlSrc, 'LISTAS por setor', 'SQL: comentário das listas por setor');
+  check(
+    'SQL: coluna printers continua JSONB (sem migração de banco)',
+    sqlSrc.includes('add column if not exists printers jsonb'),
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 35 · Cardápio por foto (OCR)                                        */
+/* ------------------------------------------------------------------ */
+section('35 · Cardápio por foto (OCR)');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  const ocrSrc = readFileSync(
+    path.join(ROOT, 'src/lib/menuOcr.ts'),
+    'utf8',
+  );
+
+  // --- Parser: preços em formatos variados.
+  const t = (name, priceCents) =>
+    check(
+      `ocr: preço "${name}" -> ${priceCents} centavos`,
+      menuOcr.extractTrailingPrice(name)?.priceCents === priceCents,
+    );
+  t('Casarão 1 ......... 32,90', 3290);
+  t('Coca 600ml R$ 8,90', 890);
+  t('Bife Acebolado 31.90', 3190);
+  t('Picanha Grelhada R$ 49,9', 4990);
+  t('Água com Gás 500ml 4,90', 490);
+  t('Torre de Chopp 2L R$ 59,90', 5990);
+  t('Bife Acebolado 31,9O', 3190);
+  t('Feijoada 1.234,56', 123456);
+  check(
+    'ocr: linha sem preço não vira item',
+    menuOcr.extractTrailingPrice('Só o nome do prato') === null,
+  );
+  check(
+    'ocr: só preço sem nome não vira item',
+    menuOcr.extractTrailingPrice('R$ 12,00') === null,
+  );
+  check(
+    'ocr: "Casarão 1" mantém o 1 no nome',
+    menuOcr.extractTrailingPrice('Casarão 1 ......... 32,90')?.name ===
+      'Casarão 1',
+  );
+  t('Brahma 600ml R$ 12/00', 1200);
+
+  // --- Normalização de tokens que o OCR lê errado (medido no teste
+  // real com foto de cardápio com pontilhado).
+  const nt = (a, b) =>
+    check(`ocr: token "${a}" -> "${b}"`, menuOcr.normalizeOcrToken(a) === b);
+  nt('600mil', '600ml');
+  nt('600miI', '600ml');
+  nt('600m!', '600ml');
+  nt('600M', '600ml');
+  nt('6O0MI', '600ml');
+  nt('3E', '3L');
+  nt('6uh', '6un');
+  nt('GUN', '6un');
+  nt('Casarão', 'Casarão');
+  nt('2L', '2L');
+  nt('600ml', '600ml');
+  check(
+    'ocr: nome com "600mil" vira "600ml" no parse',
+    menuOcr.parseMenuText('Brahma 600mil R$ 12,00', {
+      names: [],
+      categories: [],
+    }).items[0]?.name === 'Brahma 600ml',
+  );
+
+  // --- Limpeza dos pontinhos do pontilhado (ImageData sintético):
+  // ponto isolado some; ponto do "i" (haste por perto), vírgula do
+  // preço (dígito por perto) e letra ficam.
+  {
+    const W = 40;
+    const H = 24;
+    const data = new Uint8ClampedArray(W * H * 4).fill(255);
+    const paint = (x, y, w, h) => {
+      for (let yy = y; yy < y + h; yy++)
+        for (let xx = x; xx < x + w; xx++) {
+          const o = (yy * W + xx) * 4;
+          data[o] = 0;
+          data[o + 1] = 0;
+          data[o + 2] = 0;
+        }
+    };
+    paint(3, 2, 3, 3); // ponto do "i"
+    paint(3, 8, 3, 10); // haste do "i"
+    paint(12, 8, 4, 8); // dígito do preço
+    paint(18, 14, 3, 3); // vírgula do preço
+    paint(32, 12, 3, 3); // pontinho isolado do pontilhado
+    const px = (x, y) => data[(y * W + x) * 4];
+    const res = menuOcr.cleanMenuPhoto({ width: W, height: H, data });
+    check('ocr: limpeza remove 1 pontinho', res.removed === 1);
+    check('ocr: pontinho isolado some', px(33, 13) === 255);
+    check('ocr: ponto do "i" fica', px(4, 3) === 0);
+    check('ocr: vírgula do preço fica', px(19, 15) === 0);
+    check('ocr: dígito do preço fica', px(13, 10) === 0);
+  }
+
+  // --- Parser: seções, categorias e duplicados.
+  const menu = `GOSTO CASEIRO
+ALMOÇO
+Casarão 1 ......... 32,90
+arroz, feijão, 300g de filé de tilápia
+BEBIDAS
+Coca-Cola 600ml R$ 8,90
+Guaraná 600ml 8,90
+Café
+Café Coado 4,50
+`;
+  const parsed = menuOcr.parseMenuText(menu, {
+    names: ['Coca-Cola 600ml'],
+    categories: ['Almoço', 'Bebidas', 'Café'],
+  });
+  check('ocr: 4 itens lidos', parsed.items.length === 4);
+  check(
+    'ocr: item do Almoço com categoria e cozinha',
+    parsed.items[0].category === 'Almoço' &&
+      parsed.items[0].printsIn === 'kitchen',
+  );
+  check(
+    'ocr: item de Bebidas vai pro bar',
+    parsed.items[1].category === 'Bebidas' &&
+      parsed.items[1].printsIn === 'bar',
+  );
+  check(
+    'ocr: "Café" vira seção (palavra conhecida, sem maiúsculo)',
+    parsed.items[3].category === 'Café',
+  );
+  check(
+    'ocr: descrição sem preço é ignorada (skipped)',
+    parsed.skipped === 1,
+  );
+  check(
+    'ocr: nome do restaurante não vira seção com item',
+    !parsed.sections.includes('Gosto caseiro'),
+  );
+  check(
+    'ocr: duplicado marcado (já existe)',
+    parsed.items[1].exists === true,
+  );
+  check(
+    'ocr: item novo não marcado',
+    parsed.items[0].exists === false,
+  );
+  check(
+    'ocr: tipo de bebida padrão é "outro"',
+    parsed.items.every((it) => it.drinkType === 'outro'),
+  );
+  check(
+    'ocr: texto vazio não gera item',
+    menuOcr.parseMenuText('', { names: [], categories: [] }).items.length ===
+      0,
+  );
+
+  // --- Fluxo na página: foto -> revisão -> só então cria.
+  has(pageSrc, 'Ler cardápio por foto', 'ocr: botão na aba Cardápio');
+  has(pageSrc, 'MenuOcrPanel', 'ocr: painel de revisão na aba Cardápio');
+  has(
+    pageSrc,
+    'capture="environment"',
+    'ocr: abre a câmera do celular (capture)',
+  );
+  has(pageSrc, 'accept="image/*"', 'ocr: aceita imagem da galeria');
+  has(
+    pageSrc,
+    'tesseract.js@5',
+    'ocr: Tesseract v5 via CDN em runtime',
+  );
+  has(pageSrc, "createWorker('por'", 'ocr: leitura em português');
+  has(pageSrc, 'webpackIgnore', 'ocr: CDN fora do bundle (webpackIgnore)');
+  has(
+    pageSrc,
+    'Adicionar selecionados',
+    'ocr: só cria depois da revisão',
+  );
+  has(pageSrc, 'já existe', 'ocr: aviso de duplicado na revisão');
+  has(
+    pageSrc,
+    'Não consegui ler nada na foto',
+    'ocr: estado de foto sem texto legível',
+  );
+  has(
+    pageSrc,
+    'não achei nenhum item com preço',
+    'ocr: estado de texto sem item',
+  );
+  has(pageSrc, 'downscaleForOcr', 'ocr: reduz a foto antes de ler');
+  has(
+    pageSrc,
+    'cleanMenuPhoto',
+    'ocr: tira os pontinhos do pontilhado antes de ler',
+  );
+  has(
+    pageSrc,
+    "tessedit_pageseg_mode: '6'",
+    'ocr: PSM 6 (bloco único) na leitura',
+  );
+  check(
+    'ocr: nada criado sem confirmação (só 2 chamadas de createProduct: manual e Adicionar)',
+    (pageSrc.match(/await store\.createProduct\(/g) || []).length === 2,
+  );
+
+  // --- Runtime: sugestão vira produto pelo mesmo caminho manual.
+  const before = (await store.listProducts()).length;
+  const suggestion = menuOcr.parseMenuText('Prato Teste OCR 12,34', {
+    names: [],
+    categories: [],
+  }).items[0];
+  check('ocr: sugestão parseada', suggestion?.priceCents === 1234);
+  const created = await store.createProduct({
+    name: suggestion.name,
+    price_cents: suggestion.priceCents,
+    category: suggestion.category || 'Geral',
+    prints_in: suggestion.printsIn,
+    drink_type: suggestion.drinkType,
+    description: undefined,
+  });
+  check(
+    'ocr: produto criado pelo caminho manual',
+    created.name === 'Prato Teste OCR' && created.price_cents === 1234,
+  );
+  check(
+    'ocr: produto aparece na lista',
+    (await store.listProducts()).length === before + 1,
+  );
+  check(
+    'ocr: produto criado com tipo de bebida "outro" (padrão)',
+    created.drink_type === 'outro',
+  );
+  await store.deleteProduct(created.id);
+  check(
+    'ocr: limpeza do teste',
+    (await store.listProducts()).length === before,
+  );
+
+  // --- CSS.
+  has(cssSrc, '.ocr-row', 'CSS: linha da revisão');
+  has(cssSrc, '.ocr-preview', 'CSS: prévia da foto');
+  has(cssSrc, '.ocr-exists', 'CSS: selo "já existe"');
 }
 
 console.log(`\n========================================`);

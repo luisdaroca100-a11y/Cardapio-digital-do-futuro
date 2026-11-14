@@ -243,6 +243,12 @@ alter table public.closed_bills
 -- printers (JSON na linha de configurações): as impressoras de cada
 -- setor, cadastradas pelo dono sozinho em Ajustes (nome, ligação e
 -- ponte: computador do balcão ou celular na central de impressão).
+-- Formato atual: LISTAS por setor — { kitchen: [...], bar: [...],
+-- counter: [...] } (cada setor pode ter mais de uma impressora, cada
+-- uma com id próprio). Formatos antigos (lista única ou objeto único
+-- por setor) são normalizados pra listas pelo app ao carregar
+-- (normalizePrinters em src/lib/types.ts) — a coluna não muda e
+-- nenhuma config se perde.
 alter table public.settings
   add column if not exists printers jsonb not null default '[]'::jsonb;
 

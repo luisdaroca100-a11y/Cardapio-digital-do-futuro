@@ -1,21 +1,24 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import type {
-  ClosedBill,
-  Order,
-  OrderItem,
-  OrderWithItems,
-  Owner,
-  PlatformAdmin,
-  PlanId,
-  PrinterConfig,
-  PrintJob,
-  PrintJobStatus,
-  PrintJobVia,
-  Product,
-  Restaurant,
-  Settings,
-  Waiter,
-} from './types';
+import {
+  emptyPrintersConfig,
+  normalizePrinters,
+  type ClosedBill,
+  type Order,
+  type OrderItem,
+  type OrderWithItems,
+  type Owner,
+  type PlatformAdmin,
+  type PlanId,
+  type PrinterConfig,
+  type PrintersConfig,
+  type PrintJob,
+  type PrintJobStatus,
+  type PrintJobVia,
+  type Product,
+  type Restaurant,
+  type Settings,
+  type Waiter,
+} from './types.ts';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
@@ -119,7 +122,7 @@ export const DEFAULT_SETTINGS: Settings = {
   order_seq: 0,
   default_commission_pct: DEFAULT_COMMISSION_PCT,
   day_closed_date: null,
-  printers: [],
+  printers: emptyPrintersConfig(),
 };
 
 /* ------------------------------------------------------------------ */
@@ -651,6 +654,11 @@ export async function getSettings(): Promise<Settings> {
     return {
       ...DEFAULT_SETTINGS,
       ...(db.settingsByRestaurant[id] ?? {}),
+      // Normaliza a config antiga (lista única / objeto único) pra
+      // listas por setor — sem perder a impressora já cadastrada.
+      printers: normalizePrinters(
+        (db.settingsByRestaurant[id] ?? {}).printers,
+      ),
       restaurant_id: id,
     };
   }
@@ -675,7 +683,9 @@ export async function getSettings(): Promise<Settings> {
     default_commission_pct:
       data.default_commission_pct ?? DEFAULT_COMMISSION_PCT,
     day_closed_date: data.day_closed_date ?? null,
-    printers: (data.printers ?? []) as PrinterConfig[],
+    // Normaliza a config antiga (lista única / objeto único) pra
+    // listas por setor — sem perder a impressora já cadastrada.
+    printers: normalizePrinters(data.printers),
     restaurant_id: rid,
   };
 }
@@ -744,18 +754,21 @@ export async function saveSettings(s: Settings): Promise<void> {
 /* Impressoras térmicas — configuração do dono + fila de impressão     */
 /* ------------------------------------------------------------------ */
 
-/** Impressoras cadastradas pelo dono (uma por setor, no máximo). */
-export async function getPrinterConfig(): Promise<PrinterConfig[]> {
+/** Impressoras cadastradas pelo dono — LISTAS por setor (cozinha,
+ * bar e balcão podem ter mais de uma cada). A leitura normaliza
+ * qualquer formato antigo, sem perder a configuração. */
+export async function getPrinterConfig(): Promise<PrintersConfig> {
   const s = await getSettings();
-  return s.printers ?? [];
+  return s.printers ?? emptyPrintersConfig();
 }
 
-/** Salva as impressoras do restaurante (por cima das configurações). */
+/** Salva as impressoras do restaurante (por cima das configurações).
+ * Grava sempre no formato novo (listas por setor, com id). */
 export async function savePrinterConfig(
-  printers: PrinterConfig[],
+  printers: PrintersConfig,
 ): Promise<void> {
   const current = await getSettings();
-  await saveSettings({ ...current, printers });
+  await saveSettings({ ...current, printers: normalizePrinters(printers) });
 }
 
 /** Enfileira vias pra impressão automática (cozinha, bar e/ou balcão).

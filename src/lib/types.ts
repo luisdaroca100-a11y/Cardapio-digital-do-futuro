@@ -90,10 +90,13 @@ export interface Settings {
   /** data (AAAA-MM-DD) em que o dono finalizou o dia; null = dia aberto.
    * O dia reabre sozinho às 9h da manhã do dia seguinte. */
   day_closed_date?: string | null;
-  /** impressoras térmicas do restaurante (uma por setor, no máximo) —
-   * configuradas pelo dono sozinho na aba Ajustes; guardadas em JSON
-   * na linha de configurações (coluna `printers` do supabase.sql). */
-  printers?: PrinterConfig[];
+  /** impressoras térmicas do restaurante — LISTAS por setor
+   * (cozinha, bar e balcão podem ter mais de uma cada) — configuradas
+   * pelo dono sozinho na aba Ajustes; guardadas em JSON na linha de
+   * configurações (coluna `printers` do supabase.sql). Formatos
+   * antigos (lista única ou objeto único por setor) são normalizados
+   * pra listas ao carregar — nada se perde (ver normalizePrinters). */
+  printers?: PrintersConfig;
 }
 
 /* ------------------------------------------------------------------ */
@@ -111,15 +114,144 @@ export type PrinterConnection = 'usb' | 'bluetooth' | 'wifi';
  * 'phone' = celular velho parado no balcão (Bluetooth ESC/POS). */
 export type PrinterBridge = 'computer' | 'phone';
 
-/** Impressora de um setor, cadastrada pelo dono sozinho em Ajustes. */
+/** Impressora de um setor, cadastrada pelo dono sozinho em Ajustes.
+ * Cada setor pode ter mais de uma — o `id` identifica a impressora
+ * pra editar, testar, ligar/desligar e remover sem confundir com as
+ * outras do mesmo setor. */
 export interface PrinterConfig {
+  /** id estável da impressora (gerado no cadastro) */
+  id: string;
   sector: PrinterSector;
   /** nome que o dono deu (ex.: "Bematech da cozinha") */
   name: string;
   connection: PrinterConnection;
   bridge: PrinterBridge;
-  /** false = setor sem impressão automática (via fica pendente) */
+  /** false = impressora desligada (a via não vai pra ela) */
   enabled: boolean;
+}
+
+/** Configuração canônica das impressoras: listas por setor. */
+export type PrintersConfig = Record<PrinterSector, PrinterConfig[]>;
+
+/** Setores na ordem da tela (cozinha, bar, balcão). */
+export const PRINTER_SECTORS: PrinterSector[] = [
+  'kitchen',
+  'bar',
+  'counter',
+];
+
+/** Listas vazias (nenhuma impressora em nenhum setor). */
+export function emptyPrintersConfig(): PrintersConfig {
+  return { kitchen: [], bar: [], counter: [] };
+}
+
+/** Novo id de impressora. */
+export function newPrinterId(): string {
+  try {
+    return 'printer-' + crypto.randomUUID();
+  } catch {
+    return (
+      'printer-' +
+      Date.now().toString(36) +
+      '-' +
+      Math.floor(Math.random() * 1e9).toString(36)
+    );
+  }
+}
+
+function isPrinterSector(v: unknown): v is PrinterSector {
+  return v === 'kitchen' || v === 'bar' || v === 'counter';
+}
+
+function toPrinter(raw: unknown, sector: PrinterSector): PrinterConfig | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return null;
+  }
+  const r = raw as Record<string, unknown>;
+  return {
+    id:
+      typeof r.id === 'string' && r.id.trim().length > 0
+        ? r.id
+        : newPrinterId(),
+    sector,
+    name: typeof r.name === 'string' ? r.name : '',
+    connection:
+      r.connection === 'bluetooth' || r.connection === 'wifi'
+        ? r.connection
+        : 'usb',
+    bridge: r.bridge === 'phone' ? 'phone' : 'computer',
+    enabled: r.enabled !== false,
+  };
+}
+
+/**
+ * Normaliza qualquer formato de `printers` guardado pra listas por
+ * setor — sem perder a configuração de quem já tinha impressora:
+ *  - formato novo: { kitchen: [...], bar: [...], counter: [...] }
+ *  - formato antigo (lista única, uma por setor): agrupa por setor
+ *  - formato antigo (objeto único por setor): { kitchen: {...} }
+ *  - objeto único de impressora: vira lista de 1 no setor dele
+ *  - nulo, vazio ou inválido: listas vazias
+ * Impressora sem `id` ganha um na hora (o id fica salvo no próximo
+ * salvamento — a lista em si não muda).
+ */
+export function normalizePrinters(raw: unknown): PrintersConfig {
+  const out = emptyPrintersConfig();
+  const push = (sector: PrinterSector, item: unknown) => {
+    const p = toPrinter(item, sector);
+    if (p) out[sector].push(p);
+  };
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (
+        typeof item === 'object' &&
+        item !== null &&
+        !Array.isArray(item) &&
+        isPrinterSector((item as Record<string, unknown>).sector)
+      ) {
+        push((item as Record<string, unknown>).sector as PrinterSector, item);
+      }
+    }
+    return out;
+  }
+  if (typeof raw === 'object' && raw !== null) {
+    const r = raw as Record<string, unknown>;
+    for (const sector of PRINTER_SECTORS) {
+      const v = r[sector];
+      if (Array.isArray(v)) {
+        for (const item of v) push(sector, item);
+      } else if (typeof v === 'object' && v !== null) {
+        push(sector, v);
+      }
+    }
+    // Objeto único de impressora (tem sector + nome/ligação).
+    if (isPrinterSector(r.sector) && ('name' in r || 'connection' in r)) {
+      push(r.sector, r);
+    }
+    return out;
+  }
+  return out;
+}
+
+/** Todas as impressoras, numa lista só (cozinha, bar, balcão). */
+export function allPrinters(printers: PrintersConfig): PrinterConfig[] {
+  return PRINTER_SECTORS.flatMap((s) => printers[s] ?? []);
+}
+
+/**
+ * Impressoras ATIVAS de um setor que ainda não receberam a via —
+ * é o que a central usa pra entregar a via a todas as impressoras
+ * do setor, sem repetir quem já recebeu (ver o livro de entregas
+ * da central). `deliveredIds` = ids que já receberam esta via.
+ */
+export function printerTargetsForJob(
+  printers: PrintersConfig,
+  sector: PrinterSector,
+  deliveredIds: readonly string[] = [],
+): PrinterConfig[] {
+  return (printers[sector] ?? []).filter(
+    (p) => p.enabled && !deliveredIds.includes(p.id),
+  );
 }
 
 /** Item da via, fotografado na hora do envio/fechamento — a central

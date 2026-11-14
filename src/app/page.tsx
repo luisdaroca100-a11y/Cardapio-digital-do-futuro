@@ -25,6 +25,7 @@ import type {
   PrinterConfig,
   PrinterConnection,
   PrinterSector,
+  PrintersConfig,
   PrintJob,
   PrintJobItem,
   PrintJobVia,
@@ -34,6 +35,12 @@ import type {
   Waiter,
 } from '@/lib/types';
 import {
+  allPrinters,
+  emptyPrintersConfig,
+  normalizePrinters,
+  printerTargetsForJob,
+} from '@/lib/types';
+import {
   buildEscPosSlip,
   buildEscPosTestSlip,
   decodeEscPosText,
@@ -41,6 +48,7 @@ import {
 } from '@/lib/escpos';
 import { LANDING_HERO_POSTER, LANDING_HERO_VIDEO, LANDING_PRINTS } from '@/lib/landing-media';
 import { COMANDAJA_LOGO } from '@/lib/logo';
+import { parseMenuText, cleanMenuPhoto } from '@/lib/menuOcr';
 
 type View =
   | 'home'
@@ -55,6 +63,7 @@ type View =
   | 'review'
   | 'menu'
   | 'owner'
+  | 'owner-home'
   | 'owner-waiters'
   | 'owner-menu'
   | 'owner-settings'
@@ -66,6 +75,11 @@ function brl(cents: number): string {
     style: 'currency',
     currency: 'BRL',
   });
+}
+
+/** Valor curto em reais, sem centavos — rótulo das barras do gráfico. */
+function brlShort(cents: number): string {
+  return `R$ ${Math.round(cents / 100).toLocaleString('pt-BR')}`;
 }
 
 function parsePriceToCents(raw: string): number | null {
@@ -564,12 +578,12 @@ function GarcomApp() {
                   restaurant_id: rid,
                 });
                 await refreshOwner();
-                // O dono cai direto no painel dele (Financeiro), mesmo
-                // com 0 garçons — garçons e cardápio são cadastrados
-                // nas abas certas, lá dentro. No endereço da central
+                // O dono cai direto na Home (Início), mesmo com 0
+                // garçons — garçons e cardápio são cadastrados nas
+                // abas certas, lá dentro. No endereço da central
                 // de impressão (?central=impressao), cai direto nela:
                 // é o aparelho do balcão, que fica sempre aberto.
-                setView(isPrintCenterParam() ? 'print-center' : 'owner');
+                setView(isPrintCenterParam() ? 'print-center' : 'owner-home');
                 return;
               }
             } catch {
@@ -920,10 +934,10 @@ function GarcomApp() {
     safeSet(OWNER_SESSION_KEY, JSON.stringify(s));
     setOwnerAuth(false);
     await refreshOwner();
-    // O dono cai direto no painel dele (Financeiro), mesmo com 0
-    // garçons — garçons e cardápio são cadastrados nas abas certas.
+    // O dono cai direto na Home (Início), mesmo com 0 garçons —
+    // garçons e cardápio são cadastrados nas abas certas.
     // No endereço da central (?central=impressao), cai direto nela.
-    setView(isPrintCenterParam() ? 'print-center' : 'owner');
+    setView(isPrintCenterParam() ? 'print-center' : 'owner-home');
   }
 
   async function handleOwnerLogin(login: string, password: string) {
@@ -1823,6 +1837,18 @@ function GarcomApp() {
 
   /* ------------------------------ ÁREA DO DONO ------------------------------ */
 
+  if (view === 'owner-home' && ownerSession) {
+    return (
+      <OwnerHomeView
+        bills={ownerBills}
+        restaurantName={restaurant?.name ?? ''}
+        ownerName={ownerSession.name}
+        onNavigate={setView}
+        onLogout={handleOwnerLogout}
+      />
+    );
+  }
+
   if (view === 'owner' && ownerSession) {
     return (
       <OwnerDashboardView
@@ -1874,7 +1900,7 @@ function GarcomApp() {
         settings={settings}
         restaurantName={restaurant?.name ?? ''}
         ownerName={ownerSession.name}
-        printers={settings.printers ?? []}
+        printers={settings.printers ?? emptyPrintersConfig()}
         onSaved={refreshOwner}
         onSavedPrinters={refreshOwner}
         onOpenPrintCenter={() => setView('print-center')}
@@ -3058,6 +3084,7 @@ function ProductListGrouped({
   onEdit,
   pausedIds,
   onTogglePause,
+  detailed,
 }: {
   products: Product[];
   onDeleted: () => Promise<void>;
@@ -3068,6 +3095,9 @@ function ProductListGrouped({
   pausedIds?: Set<string>;
   /** pausar/reativar (só na área do dono) */
   onTogglePause?: (id: string) => void;
+  /** cartões com tudo (só na aba Cardápio do dono) — o padrão é a
+   * linha compacta, usada na tela de pedir e no primeiro acesso */
+  detailed?: boolean;
 }) {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const groups = new Map<string, Product[]>();
@@ -3085,6 +3115,87 @@ function ProductListGrouped({
             <h4>{cat}</h4>
             {items.map((p) => {
               const paused = pausedIds?.has(p.id) ?? false;
+              if (detailed) {
+                return (
+                  <div key={p.id}>
+                    <div
+                      className="own-prod-card"
+                      style={paused ? { opacity: 0.6 } : undefined}
+                    >
+                      <div className="own-prod-top">
+                        <span className="own-prod-name">{p.name}</span>
+                        <span className="own-prod-price">
+                          {brl(p.price_cents)}
+                        </span>
+                      </div>
+                      <div className="own-prod-meta">
+                        <span className="own-prod-badge">
+                          {p.prints_in === 'kitchen' ? 'Cozinha' : 'Bar'}
+                        </span>
+                        <span>{p.category}</span>
+                        {paused && (
+                          <span className="own-prod-badge">pausado</span>
+                        )}
+                      </div>
+                      {p.description && (
+                        <div className="own-prod-desc">{p.description}</div>
+                      )}
+                      {!readOnly && (
+                        <div className="own-actions">
+                          {onEdit && (
+                            <button
+                              className="btn btn-ghost btn-auto"
+                              onClick={() => onEdit(p)}
+                            >
+                              Editar
+                            </button>
+                          )}
+                          {onTogglePause && (
+                            <button
+                              className="btn btn-ghost btn-auto"
+                              onClick={() => onTogglePause(p.id)}
+                            >
+                              {paused ? 'Reativar' : 'Pausar'}
+                            </button>
+                          )}
+                          <button
+                            className="btn btn-danger-ghost btn-auto"
+                            onClick={() => setConfirmDelete(p.id)}
+                          >
+                            Remover
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    {confirmDelete === p.id && (
+                      <div className="confirm-box">
+                        <p>
+                          Remover {p.name} do cardápio? Ele some da tela de
+                          pedido do garçom. Contas já fechadas não mudam.
+                        </p>
+                        <div className="confirm-actions">
+                          <button
+                            className="btn btn-ghost btn-auto"
+                            onClick={() => setConfirmDelete(null)}
+                          >
+                            Cancelar
+                          </button>
+                          <button
+                            className="btn btn-danger btn-auto"
+                            onClick={async () => {
+                              setConfirmDelete(null);
+                              await store.deleteProduct(p.id);
+                              await onDeleted();
+                            }}
+                          >
+                            Remover mesmo
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              }
               return (
                 <div key={p.id}>
                   <div
@@ -4148,12 +4259,31 @@ function PlatformAdminView({ onLogout }: { onLogout: () => void }) {
   );
 }
 
-type OwnerTab = 'dashboard' | 'waiters' | 'menu' | 'settings';
+type OwnerTab = 'home' | 'dashboard' | 'waiters' | 'menu' | 'settings';
 
-/** Cabeçalho da área do dono: "Financeiro" + restaurante e "Olá,
- * <primeiro nome>", botão Sair; abaixo, o "Menu do dono" em grade
- * de 4 colunas: Início, Garçons, Cardápio, Ajustes. Aba ativa roxa
- * com texto branco; inativa branca com texto escuro. */
+/** Título de cada tela do dono (o cabeçalho mostra a tela atual). */
+const OWNER_TITLES: Record<OwnerTab, string> = {
+  home: 'Início',
+  dashboard: 'Financeiro',
+  waiters: 'Garçons',
+  menu: 'Cardápio',
+  settings: 'Ajustes',
+};
+
+/** Itens do menu ⋯ do dono: cada tela tem seu botão lá dentro —
+ * Início, Financeiro, Garçons, Cardápio e Ajustes (+ Sair). */
+const OWNER_MENU: { tab: OwnerTab; label: string; view: View }[] = [
+  { tab: 'home', label: 'Início', view: 'owner-home' },
+  { tab: 'dashboard', label: 'Financeiro', view: 'owner' },
+  { tab: 'waiters', label: 'Garçons', view: 'owner-waiters' },
+  { tab: 'menu', label: 'Cardápio', view: 'owner-menu' },
+  { tab: 'settings', label: 'Ajustes', view: 'owner-settings' },
+];
+
+/** Cabeçalho da área do dono: emblema da logo + título da tela atual
+ * + restaurante e "Olá, <primeiro nome>"; na lateral, o botão ⋯ que
+ * abre o menu do dono (cada tela tem seu botão lá dentro) e o Sair.
+ * O menu fecha ao escolher uma tela, ao tocar fora ou com Escape. */
 function OwnerHeader({
   tab,
   restaurantName,
@@ -4168,48 +4298,86 @@ function OwnerHeader({
   onLogout: () => void;
 }) {
   const firstName = (ownerName ?? '').split(' ')[0];
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [menuOpen]);
   return (
-    <>
-      <header className="owner-header">
+    <header className="owner-header">
+      <div className="owner-brand">
+        <img
+          className="owner-logo"
+          src={COMANDAJA_LOGO}
+          alt="Logo ComandaJá"
+        />
         <div>
-          <h1>Financeiro</h1>
+          <h1>{OWNER_TITLES[tab]}</h1>
           <div className="owner-sub">
             {restaurantName ? `${restaurantName} · ` : ''}
             {firstName ? `Olá, ${firstName}` : ''}
           </div>
         </div>
+      </div>
+      <div className="owner-actions">
+        <div className="owner-menu-wrap">
+          <button
+            type="button"
+            className="owner-menu-btn"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label="Menu do dono"
+            onClick={() => setMenuOpen((o) => !o)}
+          >
+            ⋯
+          </button>
+          {menuOpen && (
+            <>
+              <button
+                type="button"
+                className="owner-menu-backdrop"
+                aria-label="Fechar menu"
+                onClick={() => setMenuOpen(false)}
+              />
+              <div className="owner-menu" role="menu" aria-label="Menu do dono">
+                {OWNER_MENU.map((item) => (
+                  <button
+                    key={item.tab}
+                    type="button"
+                    role="menuitem"
+                    className={tab === item.tab ? 'on' : ''}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onNavigate(item.view);
+                    }}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+                <div className="owner-menu-sep" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onLogout();
+                  }}
+                >
+                  Sair
+                </button>
+              </div>
+            </>
+          )}
+        </div>
         <button className="owner-logout" onClick={onLogout}>
           Sair
         </button>
-      </header>
-      <div className="owner-nav-label">Menu do dono</div>
-      <nav className="owner-tabs">
-        <button
-          className={tab === 'dashboard' ? 'on' : ''}
-          onClick={() => onNavigate('owner')}
-        >
-          Início
-        </button>
-        <button
-          className={tab === 'waiters' ? 'on' : ''}
-          onClick={() => onNavigate('owner-waiters')}
-        >
-          Garçons
-        </button>
-        <button
-          className={tab === 'menu' ? 'on' : ''}
-          onClick={() => onNavigate('owner-menu')}
-        >
-          Cardápio
-        </button>
-        <button
-          className={tab === 'settings' ? 'on' : ''}
-          onClick={() => onNavigate('owner-settings')}
-        >
-          Ajustes
-        </button>
-      </nav>
-    </>
+      </div>
+    </header>
   );
 }
 
@@ -4852,6 +5020,145 @@ function HomeView({
 
 /* ------------------- DONO: DASHBOARD FINANCEIRO ------------------- */
 
+/* ------------------- DONO: INÍCIO (HOME) ------------------- */
+
+/** Primeira tela do dono ao entrar no painel: só a visão geral de
+ * vendas, separada de tudo — total de hoje, total dos últimos 7 dias
+ * e o gráfico de vendas por dia. Nada de garçons, contas ou fechar
+ * o dia aqui. */
+function OwnerHomeView({
+  bills,
+  restaurantName,
+  ownerName,
+  onNavigate,
+  onLogout,
+}: {
+  bills: ClosedBill[];
+  restaurantName: string;
+  ownerName: string;
+  onNavigate: (v: View) => void;
+  onLogout: () => void;
+}) {
+  /* Totais por dia (últimos 7 dias) — o gráfico de vendas. */
+  const chartDays = (() => {
+    const now = new Date();
+    const out: {
+      key: string;
+      weekday: string;
+      date: string;
+      total: number;
+    }[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+      const end = d.getTime() + 24 * 60 * 60 * 1000;
+      const total = bills.reduce((s, b) => {
+        const t = new Date(b.closed_at).getTime();
+        return t >= d.getTime() && t < end ? s + b.total_cents : s;
+      }, 0);
+      out.push({
+        key: `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`,
+        weekday:
+          i === 0
+            ? 'Hoje'
+            : d
+                .toLocaleDateString('pt-BR', { weekday: 'short' })
+                .replace('.', ''),
+        date: `${String(d.getDate()).padStart(2, '0')}/${String(
+          d.getMonth() + 1,
+        ).padStart(2, '0')}`,
+        total,
+      });
+    }
+    return out;
+  })();
+  const chartMax = Math.max(...chartDays.map((d) => d.total), 1);
+  const todayBills = filterBills(bills, 'today');
+  const todaySold = todayBills.reduce((s, b) => s + b.total_cents, 0);
+  const weekBills = filterBills(bills, '7d');
+  const weekSold = weekBills.reduce((s, b) => s + b.total_cents, 0);
+
+  return (
+    <div className="app app-owner fin-theme">
+      <OwnerHeader
+        tab="home"
+        restaurantName={restaurantName}
+        ownerName={ownerName}
+        onNavigate={onNavigate}
+        onLogout={onLogout}
+      />
+      <div className="content">
+        <section className="fin-section">
+          <div className="fin-section-title">Hoje</div>
+          <div className="fin-summary-hero">
+            <span>Total vendido hoje</span>
+            <strong>{brl(todaySold)}</strong>
+          </div>
+          <p className="fin-section-sub">
+            {todayBills.length}{' '}
+            {todayBills.length === 1
+              ? 'conta fechada hoje'
+              : 'contas fechadas hoje'}
+          </p>
+        </section>
+
+        <section className="fin-section">
+          <div className="fin-section-title">Últimos 7 dias</div>
+          <div className="fin-summary-grid">
+            <div className="fin-summary-card">
+              <span>Total vendido</span>
+              <strong>{brl(weekSold)}</strong>
+              <span className="fin-summary-sub">últimos 7 dias</span>
+            </div>
+            <div className="fin-summary-card">
+              <span>Contas fechadas</span>
+              <strong>{weekBills.length}</strong>
+              <span className="fin-summary-sub">nos últimos 7 dias</span>
+            </div>
+          </div>
+        </section>
+
+        <section className="fin-section">
+          <div className="fin-section-title">Vendas por dia</div>
+          <p className="fin-section-sub">Últimos 7 dias</p>
+          {bills.length === 0 ? (
+            <div className="empty">
+              Nenhuma venda ainda. Quando um garçom fechar uma mesa, a
+              venda aparece aqui sozinha.
+            </div>
+          ) : (
+            <div
+              className="fin-chart"
+              role="img"
+              aria-label="Vendas por dia nos últimos 7 dias"
+            >
+              {chartDays.map((d) => (
+                <div key={d.key} className="fin-bar-col">
+                  <span className="fin-bar-value">{brlShort(d.total)}</span>
+                  <div className="fin-bar-track">
+                    <div
+                      className={
+                        d.total > 0 ? 'fin-bar' : 'fin-bar fin-bar-zero'
+                      }
+                      style={{
+                        height: `${Math.max(
+                          3,
+                          (d.total / chartMax) * 100,
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                  <span className="fin-bar-day">{d.weekday}</span>
+                  <span className="fin-bar-date">{d.date}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
 function OwnerDashboardView({
   bills,
   waiters,
@@ -4872,6 +5179,10 @@ function OwnerDashboardView({
   onRefresh: () => Promise<void>;
 }) {
   const [period, setPeriod] = useState<Period>('today');
+  /** Sub-aba do financeiro: Resumo | Garçons | Contas (padrão: Resumo). */
+  const [finTab, setFinTab] = useState<'resumo' | 'garcons' | 'contas'>(
+    'resumo',
+  );
   const shown = filterBills(bills, period);
   const sold = shown.reduce((s, b) => s + b.total_cents, 0);
   const commission = shown.reduce(
@@ -4941,7 +5252,7 @@ function OwnerDashboardView({
   }
 
   return (
-    <div className="app app-owner">
+    <div className="app app-owner fin-theme">
       <OwnerHeader
         tab="dashboard"
         restaurantName={restaurantName}
@@ -4963,118 +5274,178 @@ function OwnerDashboardView({
           ))}
         </div>
 
-        <div className="stat-grid">
-          <div className="stat-card">
-            <span>Total vendido</span>
-            <strong>{brl(sold)}</strong>
-            <span className="stat-sub">
-              {shown.length} {shown.length === 1 ? 'conta' : 'contas'}
-            </span>
+        <div className="fin-tabs" role="tablist" aria-label="Seções do financeiro">
+          {(
+            [
+              ['resumo', 'Resumo'],
+              ['garcons', 'Garçons'],
+              ['contas', 'Contas'],
+            ] as const
+          ).map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              role="tab"
+              aria-selected={finTab === v}
+              className={finTab === v ? 'on' : ''}
+              onClick={() => setFinTab(v)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {finTab === 'resumo' && (
+          <>
+        <section className="fin-section">
+          <div className="fin-section-title">Resumo do período</div>
+          <div className="fin-summary-grid">
+            <div className="fin-summary-card">
+              <span>Total vendido</span>
+              <strong>{brl(sold)}</strong>
+              <span className="fin-summary-sub">
+                {shown.length} {shown.length === 1 ? 'conta' : 'contas'}
+              </span>
+            </div>
+            <div className="fin-summary-card">
+              <span>Comissão dos garçons</span>
+              <strong>{brl(commission)}</strong>
+            </div>
           </div>
-          <div className="stat-card">
-            <span>Comissão dos garçons</span>
-            <strong>{brl(commission)}</strong>
-          </div>
-          <div className="stat-card highlight">
+          <div className="fin-summary-hero">
             <span>Fica pro restaurante</span>
             <strong>{brl(restaurant)}</strong>
           </div>
-        </div>
-
-        <div className="section-title">Por garçom</div>
-        {waiters.length === 0 ? (
-          <div className="empty">
-            Nenhum garçom cadastrado. Cadastre na aba Garçons.
-          </div>
-        ) : (
-          waiters.map((w) => {
-            const wb = shown.filter((b) => b.waiter_id === w.id);
-            const wSold = wb.reduce((s, b) => s + b.total_cents, 0);
-            const wComm = wb.reduce(
-              (s, b) => s + (b.commission_cents ?? 0),
-              0,
-            );
-            const pct = w.commission_pct ?? 8;
-            return (
-              <div key={w.id} className="item-row">
-                <div className="top">
-                  <span className="iname">{w.name}</span>
-                  <span className="iline">{brl(wSold)}</span>
-                </div>
-                <div className="note-line">
-                  Comissão ({pct}%): {brl(wComm)} · Restaurante:{' '}
-                  {brl(wSold - wComm)}
-                </div>
-              </div>
-            );
-          })
-        )}
-
-        <div className="section-title">
-          Contas fechadas ({shown.length})
-        </div>
-        {shown.length === 0 ? (
-          <div className="empty">
-            Nenhuma conta fechada neste período. Quando um garçom fechar
-            uma mesa, a venda aparece aqui sozinha.
-          </div>
-        ) : (
-          shown.map((b) => (
-            <div key={b.id} className="item-row">
-              <div className="top">
-                <span className="iname">
-                  Mesa {String(b.table_number).padStart(2, '0')} ·{' '}
-                  {b.waiter_name}
-                </span>
-                <span className="iline">{brl(b.total_cents)}</span>
-              </div>
-              <div className="note-line">
-                {formatDateTime(b.closed_at)} · Comissão{' '}
-                {brl(b.commission_cents ?? 0)}
-              </div>
-            </div>
-          ))
-        )}
-
-        <div style={{ height: 12 }} />
-        <div style={{ textAlign: 'right' }}>
-          <button
-            className="btn btn-ghost btn-auto"
-            onClick={() => void onRefresh()}
-          >
-            Atualizar
-          </button>
-        </div>
-        <div style={{ height: 10 }} />
-        {dayMsg && (
-          <div className={dayMsg.error ? 'error' : 'ok-note'}>{dayMsg.text}</div>
-        )}
-        {dayClosed ? (
-          <>
-            <div className="card">
-              <h3>Dia encerrado</h3>
-              <p className="hint">
-                Os garçons não conseguem abrir mesa nova nem fazer pedido
-                novo. Mesas abertas ainda podem ser fechadas. Reabre
-                sozinho amanhã às 9h.
-              </p>
-            </div>
-            <button
-              className="btn btn-purple"
-              disabled={busyDay}
-              onClick={() => void reopen()}
-            >
-              Reabrir dia
-            </button>
+        </section>
           </>
-        ) : (
-          <button
-            className="btn btn-dark"
-            disabled={busyDay}
-            onClick={() => setConfirmFinalize(true)}
-          >
-            Finalizar dia
-          </button>
+        )}
+
+        {finTab === 'garcons' && (
+          <>
+        <section className="fin-section">
+          <div className="fin-section-title">Por garçom</div>
+          {waiters.length === 0 ? (
+            <div className="empty">
+              Nenhum garçom cadastrado. Cadastre na aba Garçons.
+            </div>
+          ) : (
+            waiters.map((w) => {
+              const wb = shown.filter((b) => b.waiter_id === w.id);
+              const wSold = wb.reduce((s, b) => s + b.total_cents, 0);
+              const wComm = wb.reduce(
+                (s, b) => s + (b.commission_cents ?? 0),
+                0,
+              );
+              const pct = w.commission_pct ?? 8;
+              return (
+                <div key={w.id} className="fin-waiter-card">
+                  <div className="fin-waiter-top">
+                    <span className="fin-waiter-name">{w.name}</span>
+                    <span className="fin-waiter-pct">
+                      {pct}% de comissão
+                    </span>
+                  </div>
+                  <div className="fin-kv">
+                    <span>Vendeu</span>
+                    <strong>{brl(wSold)}</strong>
+                  </div>
+                  <div className="fin-kv">
+                    <span>Comissão a receber</span>
+                    <strong>{brl(wComm)}</strong>
+                  </div>
+                  <div className="fin-kv fin-kv-total">
+                    <span>Fica pro restaurante</span>
+                    <strong>{brl(wSold - wComm)}</strong>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </section>
+          </>
+        )}
+
+        {finTab === 'contas' && (
+          <>
+        <section className="fin-section">
+          <div className="fin-section-title">
+            Contas fechadas ({shown.length})
+          </div>
+          {shown.length === 0 ? (
+            <div className="empty">
+              Nenhuma conta fechada neste período. Quando um garçom fechar
+              uma mesa, a venda aparece aqui sozinha.
+            </div>
+          ) : (
+            shown.map((b) => (
+              <div key={b.id} className="fin-bill-card">
+                <div className="fin-bill-top">
+                  <span className="fin-bill-table">
+                    Mesa {String(b.table_number).padStart(2, '0')}
+                  </span>
+                  <span className="fin-bill-total">
+                    {brl(b.total_cents)}
+                  </span>
+                </div>
+                <div className="fin-bill-meta">
+                  {b.waiter_name} · {formatDateTime(b.closed_at)}
+                </div>
+                <div className="fin-bill-detail">
+                  Subtotal {brl(b.subtotal_cents)} · Taxa{' '}
+                  {brl(b.fee_cents)} · Comissão{' '}
+                  {brl(b.commission_cents ?? 0)}
+                </div>
+              </div>
+            ))
+          )}
+        </section>
+          </>
+        )}
+
+        {finTab === 'resumo' && (
+        <section className="fin-section">
+          <div className="fin-section-head">
+            <div className="fin-section-title">Fechar o dia</div>
+            <button
+              className="btn btn-ghost btn-auto"
+              onClick={() => void onRefresh()}
+            >
+              Atualizar
+            </button>
+          </div>
+          {dayMsg && (
+            <div className={dayMsg.error ? 'error' : 'ok-note'}>
+              {dayMsg.text}
+            </div>
+          )}
+          {dayClosed ? (
+            <>
+              <div className="card">
+                <h3>Dia encerrado</h3>
+                <p className="hint">
+                  Os garçons não conseguem abrir mesa nova nem fazer pedido
+                  novo. Mesas abertas ainda podem ser fechadas. Reabre
+                  sozinho amanhã às 9h.
+                </p>
+              </div>
+              <button
+                className="btn btn-purple"
+                disabled={busyDay}
+                onClick={() => void reopen()}
+              >
+                Reabrir dia
+              </button>
+            </>
+          ) : (
+            <button
+              className="btn btn-dark"
+              disabled={busyDay}
+              onClick={() => setConfirmFinalize(true)}
+            >
+              Finalizar dia
+            </button>
+          )}
+        </section>
         )}
       </div>
 
@@ -5264,7 +5635,7 @@ function OwnerWaitersView({
   }
 
   return (
-    <div className="app app-owner">
+    <div className="app app-owner fin-theme">
       <OwnerHeader
         tab="waiters"
         restaurantName={restaurantName}
@@ -5390,17 +5761,23 @@ function OwnerWaitersView({
           <div className="empty">Nenhum garçom cadastrado.</div>
         ) : (
           waiters.map((w) => (
-            <div key={w.id} className="item-row">
-              <div className="top">
-                <span className="iname">{w.name}</span>
+            <div key={w.id} className="own-waiter-card">
+              <div className="own-waiter-top">
+                <span className="own-waiter-name">{w.name}</span>
+                <span className="own-waiter-pct">
+                  {w.commission_pct ?? 8}% de comissão
+                </span>
               </div>
-              <div className="note-line">
-                usuário: {w.login} · comissão {w.commission_pct ?? 8}%
+              <div className="own-kv">
+                <span>usuário</span>
+                <strong>{w.login}</strong>
               </div>
-              <div className="stepper">
-                <button onClick={() => startEdit(w)}>Editar</button>
+              <div className="own-actions">
+                <button className="btn btn-ghost btn-auto" onClick={() => startEdit(w)}>
+                  Editar
+                </button>
                 <button
-                  className="remove"
+                  className="btn btn-danger-ghost btn-auto"
                   onClick={() => setConfirmDelete(w)}
                 >
                   Remover
@@ -5479,7 +5856,7 @@ function OwnerMenuView({
   const [editing, setEditing] = useState<Product | null>(null);
   const [showForm, setShowForm] = useState(false);
   return (
-    <div className="app app-owner">
+    <div className="app app-owner fin-theme">
       <OwnerHeader
         tab="menu"
         restaurantName={restaurantName}
@@ -5506,6 +5883,7 @@ function OwnerMenuView({
           Quem mexe no cardápio é você: o garçom só usa os produtos na hora
           de anotar o pedido.
         </p>
+        <MenuOcrPanel products={products} onChanged={onChanged} />
         {showForm && (
           <div className="card">
             <h2>
@@ -5537,6 +5915,7 @@ function OwnerMenuView({
             pausedIds={pausedIds}
             onTogglePause={onTogglePause}
             onDeleted={onChanged}
+            detailed
             onEdit={(p) => {
               setEditing(p);
               setShowForm(true);
@@ -5548,19 +5927,432 @@ function OwnerMenuView({
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Cardápio por foto (OCR) — só na aba Cardápio do dono.               */
+/*                                                                      */
+/* O dono tira foto do cardápio de papel (câmera) ou escolhe uma       */
+/* imagem da galeria; o Tesseract.js (português) lê o texto NO         */
+/* APARELHO — a foto não sai do celular, não tem chave nem custo.      */
+/* O Tesseract é carregado por CDN em runtime (import dinâmico), pra   */
+/* não pesar o bundle: se o CDN falhar, avisa e a aba continua.        */
+/*                                                                      */
+/* Depois da leitura, NADA entra sozinho: o dono confere a lista de    */
+/* itens sugeridos (nome, preço, categoria e cozinha/bar editáveis,    */
+/* com checkbox pra incluir ou não) e só então toca em "Adicionar      */
+/* selecionados" — aí os produtos são criados pelo mesmo                */
+/* store.createProduct do cadastro manual.                              */
+/* ------------------------------------------------------------------ */
+
+/** Tesseract.js v5 via CDN (só carrega quando o dono usa a foto). */
+const TESSERACT_ESM_URL: string =
+  'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.esm.min.js';
+
+let tesseractMod: any = null;
+async function loadTesseract(): Promise<any> {
+  if (tesseractMod) return tesseractMod;
+  const mod = await import(/* webpackIgnore: true */ TESSERACT_ESM_URL);
+  tesseractMod = mod?.default ?? mod;
+  return tesseractMod;
+}
+
+/** Reduz a foto pra no máximo 2000px de lado antes de ler (foto de
+ * celular é grande e a leitura ficaria lenta) e tira os pontinhos
+ * do pontilhado ("nome ......... preço") — sem isso o Tesseract lê
+ * os pontos como letras e erra os nomes. Se falhar, usa a foto
+ * original. */
+async function downscaleForOcr(file: Blob): Promise<Blob> {
+  try {
+    const bmp = await createImageBitmap(file);
+    const maxSide = 2000;
+    const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bmp.width * scale));
+    canvas.height = Math.max(1, Math.round(bmp.height * scale));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      bmp.close();
+      return file;
+    }
+    ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    bmp.close();
+    try {
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      cleanMenuPhoto(imageData);
+      ctx.putImageData(imageData, 0, 0);
+    } catch {
+      // Sem a limpeza, lê a foto como está.
+    }
+    const blob = await new Promise<Blob | null>((res) =>
+      canvas.toBlob(res, 'image/jpeg', 0.85),
+    );
+    return blob ?? file;
+  } catch {
+    return file;
+  }
+}
+
+interface OcrRow {
+  key: string;
+  name: string;
+  price: string;
+  category: string;
+  printsIn: 'kitchen' | 'bar';
+  exists: boolean;
+  selected: boolean;
+}
+
+type OcrStatus = 'idle' | 'loading' | 'reading' | 'review' | 'error';
+
+function MenuOcrPanel({
+  products,
+  onChanged,
+}: {
+  products: Product[];
+  onChanged: () => Promise<void>;
+}) {
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [status, setStatus] = useState<OcrStatus>('idle');
+  const [progress, setProgress] = useState('');
+  const [error, setError] = useState('');
+  const [rows, setRows] = useState<OcrRow[]>([]);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [skipped, setSkipped] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [added, setAdded] = useState(0);
+
+  const categories = Array.from(
+    new Set(products.map((p) => p.category)),
+  ).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+  function reset() {
+    setStatus('idle');
+    setProgress('');
+    setError('');
+    setRows([]);
+    setSkipped(0);
+    setBusy(false);
+    if (preview) URL.revokeObjectURL(preview);
+    setPreview(null);
+    if (fileRef.current) fileRef.current.value = '';
+  }
+
+  async function startOcr(file: File) {
+    setAdded(0);
+    setError('');
+    setRows([]);
+    if (preview) URL.revokeObjectURL(preview);
+    setPreview(URL.createObjectURL(file));
+    setStatus('loading');
+    setProgress('Carregando a leitura...');
+    try {
+      const T = await loadTesseract();
+      setStatus('reading');
+      setProgress('Lendo a foto... 0%');
+      const image = await downscaleForOcr(file);
+      const worker = await T.createWorker('por', 1, {
+        logger: (m: { status: string; progress: number }) => {
+          if (m.status === 'recognizing text') {
+            setProgress(`Lendo a foto... ${Math.round(m.progress * 100)}%`);
+          } else {
+            setProgress('Preparando a leitura...');
+          }
+        },
+      });
+      // Um bloco único de texto (cardápio) — lê melhor que o modo
+      // automático, que se perde nos preços alinhados à direita.
+      try {
+        await worker.setParameters({ tessedit_pageseg_mode: '6' });
+      } catch {
+        // Segue com o modo padrão.
+      }
+      let text = '';
+      try {
+        const { data } = await worker.recognize(image);
+        text = (data?.text as string) ?? '';
+      } finally {
+        await worker.terminate();
+      }
+      const parsed = parseMenuText(text, {
+        names: products.map((p) => p.name),
+        categories,
+      });
+      if (parsed.items.length === 0) {
+        setStatus('error');
+        setError(
+          text.trim()
+            ? 'Li o texto da foto, mas não achei nenhum item com preço. Confira se os preços estão visíveis na foto e tente de novo.'
+            : 'Não consegui ler nada na foto. Tente uma foto com mais luz, de frente e sem reflexo.',
+        );
+        return;
+      }
+      setSkipped(parsed.skipped);
+      setRows(
+        parsed.items.map((it, i) => ({
+          key: `${i}-${it.name}`,
+          name: it.name,
+          price: (it.priceCents / 100).toFixed(2).replace('.', ','),
+          category: it.category,
+          printsIn: it.printsIn,
+          exists: it.exists,
+          selected: !it.exists,
+        })),
+      );
+      setStatus('review');
+    } catch {
+      setStatus('error');
+      setError(
+        'Não consegui carregar a leitura. Verifique a internet e tente de novo.',
+      );
+    }
+  }
+
+  function updateRow(key: string, patch: Partial<OcrRow>) {
+    setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+  }
+
+  async function addSelected() {
+    const selected = rows.filter((r) => r.selected);
+    if (selected.length === 0) {
+      setError('Selecione pelo menos um item pra adicionar.');
+      return;
+    }
+    setError('');
+    setBusy(true);
+    try {
+      let count = 0;
+      for (const r of selected) {
+        const cents = parsePriceToCents(r.price);
+        if (!r.name.trim() || cents === null) continue;
+        await store.createProduct({
+          name: r.name.trim(),
+          price_cents: cents,
+          category: r.category.trim() || 'Geral',
+          prints_in: r.printsIn,
+          drink_type: r.printsIn === 'bar' ? 'outro' : undefined,
+          description: undefined,
+        });
+        count += 1;
+      }
+      setAdded(count);
+      reset();
+      await onChanged();
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : 'Não foi possível adicionar.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const selectedCount = rows.filter((r) => r.selected).length;
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void startOcr(f);
+        }}
+      />
+      {status === 'idle' && (
+        <>
+          {added > 0 && (
+            <p className="hint">
+              {added} {added === 1 ? 'produto adicionado' : 'produtos adicionados'}{' '}
+              ao cardápio.
+            </p>
+          )}
+          <button
+            className="btn btn-ghost btn-auto"
+            onClick={() => fileRef.current?.click()}
+          >
+            📷 Ler cardápio por foto
+          </button>
+          <p className="hint">
+            Tire uma foto do cardápio de papel e o sistema lê os pratos e
+            preços sozinho. Você confere tudo antes de salvar — nada entra
+            sem revisão.
+          </p>
+        </>
+      )}
+      {(status === 'loading' || status === 'reading') && (
+        <div className="card">
+          <h2>Lendo o cardápio...</h2>
+          {preview && (
+            <img src={preview} alt="Foto do cardápio" className="ocr-preview" />
+          )}
+          <p className="hint">{progress}</p>
+          <button className="btn btn-ghost" onClick={reset}>
+            Cancelar
+          </button>
+        </div>
+      )}
+      {status === 'error' && (
+        <div className="card">
+          <h2>Não deu pra ler a foto</h2>
+          {preview && (
+            <img src={preview} alt="Foto do cardápio" className="ocr-preview" />
+          )}
+          <div className="error">{error}</div>
+          <button
+            className="btn btn-orange"
+            onClick={() => fileRef.current?.click()}
+          >
+            Tirar outra foto
+          </button>
+          <div style={{ height: 10 }} />
+          <button className="btn btn-ghost" onClick={reset}>
+            Voltar
+          </button>
+        </div>
+      )}
+      {status === 'review' && (
+        <div className="card">
+          <h2>
+            Confira os itens lidos ({selectedCount} selecionados de{' '}
+            {rows.length})
+          </h2>
+          <p className="hint">
+            Corrija o que a leitura errou antes de salvar.
+            {skipped > 0 &&
+              ` ${skipped} ${skipped === 1 ? 'linha' : 'linhas'} da foto ${
+                skipped === 1 ? 'foi ignorada' : 'foram ignoradas'
+              } (sem preço).`}
+          </p>
+          {preview && (
+            <img src={preview} alt="Foto do cardápio" className="ocr-preview" />
+          )}
+          <datalist id="ocr-cat-suggestions">
+            {categories.map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
+          <div className="ocr-list">
+            {rows.map((r) => (
+              <div key={r.key} className="ocr-row">
+                <div className="ocr-row-head">
+                  <input
+                    type="checkbox"
+                    checked={r.selected}
+                    onChange={(e) =>
+                      updateRow(r.key, { selected: e.target.checked })
+                    }
+                    aria-label={`Incluir ${r.name}`}
+                  />
+                  <input
+                    className="ocr-name"
+                    value={r.name}
+                    onChange={(e) => updateRow(r.key, { name: e.target.value })}
+                    placeholder="Nome do produto"
+                  />
+                  {r.exists && <span className="ocr-exists">já existe</span>}
+                </div>
+                <div className="row2">
+                  <div className="field">
+                    <label>Preço (R$)</label>
+                    <input
+                      inputMode="decimal"
+                      value={r.price}
+                      onChange={(e) =>
+                        updateRow(r.key, { price: e.target.value })
+                      }
+                      placeholder="32,90"
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Categoria</label>
+                    <input
+                      list="ocr-cat-suggestions"
+                      value={r.category}
+                      onChange={(e) =>
+                        updateRow(r.key, { category: e.target.value })
+                      }
+                      placeholder="Ex.: Almoço"
+                    />
+                  </div>
+                </div>
+                <div className="field">
+                  <label>Imprime em</label>
+                  <div className="seg">
+                    <button
+                      type="button"
+                      className={r.printsIn === 'kitchen' ? 'on-kitchen' : ''}
+                      onClick={() => updateRow(r.key, { printsIn: 'kitchen' })}
+                    >
+                      🍽️ Cozinha
+                    </button>
+                    <button
+                      type="button"
+                      className={r.printsIn === 'bar' ? 'on-bar' : ''}
+                      onClick={() => updateRow(r.key, { printsIn: 'bar' })}
+                    >
+                      🥤 Bar
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+          {error && <div className="error">{error}</div>}
+          <button
+            className="btn btn-orange"
+            disabled={busy}
+            onClick={() => void addSelected()}
+          >
+            {busy
+              ? 'Adicionando...'
+              : `Adicionar selecionados (${selectedCount})`}
+          </button>
+          <div style={{ height: 10 }} />
+          <button
+            className="btn btn-ghost"
+            onClick={() => fileRef.current?.click()}
+          >
+            Tirar outra foto
+          </button>
+          <div style={{ height: 10 }} />
+          <button className="btn btn-ghost" onClick={reset}>
+            Descartar
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ------------------- DONO: AJUSTES ------------------- */
 
 /* ------------------------------------------------------------------ */
 /* Central de impressão — o aparelho do balcão (computador ou celular  */
 /* velho) que fica aberto ouvindo os pedidos e imprimindo sozinho.     */
 /*                                                                      */
-/* Dois caminhos, o dono escolhe por setor em Ajustes → Impressoras:    */
+/* Dois caminhos, o dono escolhe por IMPRESSORA em Ajustes →           */
+/* Impressoras (cada setor pode ter mais de uma):                      */
 /*  - Computador do balcão: imprime pelo navegador (window.print com   */
 /*    a via em #print-area, CSS 80mm). Pra não pedir confirmação a     */
 /*    cada cupom, o Chrome tem que abrir com --kiosk-printing.         */
+/*    Limite honesto: o navegador só imprime na impressora PADRÃO do   */
+/*    sistema — se um setor tiver duas impressoras no mesmo            */
+/*    computador, as duas vias saem na padrão (uma cópia por           */
+/*    impressora). Pra sair uma em cada, use pontes diferentes ou      */
+/*    um segundo computador com a central aberta.                      */
 /*  - Celular na central: manda os bytes ESC/POS direto pra            */
-/*    impressora Bluetooth (Web Bluetooth, serviço UART). Sem          */
-/*    Bluetooth, volta pra impressão do sistema.                       */
+/*    impressora Bluetooth (Web Bluetooth, serviço UART). Cada         */
+/*    impressora de ponte celular tem a sua conexão Bluetooth na       */
+/*    central — o celular conecta uma por uma. Sem Bluetooth, volta    */
+/*    pra impressão do sistema (só no "Imprimir agora").               */
+/*                                                                      */
+/* A via de um setor chega a TODAS as impressoras ligadas dele, uma    */
+/* de cada vez, na ordem cadastrada. O livro de entregas (por          */
+/* aparelho, em localStorage) lembra quem já recebeu a via: se uma     */
+/* falhar, a via fica na fila e o "Tentar de novo" só entrega nas      */
+/* que faltam — nada se perde e nada sai duplicado sem querer.          */
 /*                                                                      */
 /* Sem impressora ligada, o modo simulação registra a via como         */
 /* impressa (simulada) — pra testar o fluxo sem hardware. Via que      */
@@ -5588,7 +6380,9 @@ function PrintCenterView({
   onNavigate: (v: View) => void;
   onLogout: () => void;
 }) {
-  const [printers, setPrinters] = useState<PrinterConfig[]>([]);
+  const [printers, setPrinters] = useState<PrintersConfig>(() =>
+    emptyPrintersConfig(),
+  );
   const [jobs, setJobs] = useState<PrintJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -5599,18 +6393,108 @@ function PrintCenterView({
   const [simulation, setSimulation] = useState(
     () => safeGet('central_simulacao_v1') === '1',
   );
-  const [btState, setBtState] = useState<BtState>('disconnected');
-  const [btError, setBtError] = useState('');
-  const [printingJobId, setPrintingJobId] = useState<string | null>(null);
-  const [printAreaJob, setPrintAreaJob] = useState<PrintJob | null>(null);
+  /** Bluetooth POR impressora (id → estado/erro): cada impressora de
+   * ponte celular tem a sua conexão — o celular conecta uma por uma. */
+  const [btStates, setBtStates] = useState<Record<string, BtState>>({});
+  const [btErrors, setBtErrors] = useState<Record<string, string>>({});
+  /** área de impressão do computador: via + alvo + sequência (a
+   * sequência força o efeito a reabrir o diálogo a cada cópia). */
+  const [printArea, setPrintArea] = useState<{
+    job: PrintJob;
+    targetId: string;
+    seq: number;
+  } | null>(null);
   const [previewJob, setPreviewJob] = useState<PrintJob | null>(null);
-  const btCharRef = useRef<unknown>(null);
-  /** trava: só um cupom por vez no diálogo de impressão/Bluetooth */
-  const printingRef = useRef(false);
+  const btCharsRef = useRef<Record<string, unknown>>({});
+  /** trava: só uma entrega por vez no diálogo de impressão/Bluetooth */
+  const deliveringRef = useRef(false);
+  /** resolve da impressão atual no computador (afterprint / guarda) */
+  const computerResolveRef = useRef<((ok: boolean) => void) | null>(null);
+  /** alvo atual da impressão no computador */
+  const printingTargetRef = useRef<{
+    jobId: string;
+    printerId: string;
+  } | null>(null);
+  const printSeqRef = useRef(0);
+  /** Livro de entregas (por aparelho, em localStorage): via → quem
+   * já recebeu (id + por onde saiu). Se a central recarregar no meio
+   * da entrega, continua de onde parou — sem duplicar. */
+  const ledgerRef = useRef<
+    Record<string, { id: string; via: PrintJobVia }[]>
+  >({});
+  const ledgerLoadedRef = useRef(false);
+
+  const LEDGER_KEY = 'central_deliveries_v1';
+
+  /** Quem já recebeu a via (do livro de entregas deste aparelho). */
+  function deliveredOf(jobId: string): { id: string; via: PrintJobVia }[] {
+    return ledgerRef.current[jobId] ?? [];
+  }
+
+  function persistLedger() {
+    safeSet(LEDGER_KEY, JSON.stringify(ledgerRef.current));
+  }
+
+  function recordDelivered(
+    jobId: string,
+    printerId: string,
+    via: PrintJobVia,
+  ) {
+    const list = deliveredOf(jobId);
+    if (list.some((d) => d.id === printerId)) return;
+    ledgerRef.current = {
+      ...ledgerRef.current,
+      [jobId]: [...list, { id: printerId, via }],
+    };
+    persistLedger();
+  }
+
+  function clearLedger(jobId: string) {
+    if (!ledgerRef.current[jobId]) return;
+    const next = { ...ledgerRef.current };
+    delete next[jobId];
+    ledgerRef.current = next;
+    persistLedger();
+  }
+
+  /** Descarta entregas de vias que já saíram da fila. */
+  function pruneLedger(list: PrintJob[]) {
+    const alive = new Set(list.map((j) => j.id));
+    const next = Object.fromEntries(
+      Object.entries(ledgerRef.current).filter(([id]) => alive.has(id)),
+    );
+    if (Object.keys(next).length !== Object.keys(ledgerRef.current).length) {
+      ledgerRef.current = next;
+      persistLedger();
+    }
+  }
+
+  function loadLedger() {
+    if (ledgerLoadedRef.current) return;
+    ledgerLoadedRef.current = true;
+    try {
+      const raw = safeGet(LEDGER_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<
+          string,
+          { id: string; via: PrintJobVia }[]
+        >;
+        if (parsed && typeof parsed === 'object') {
+          ledgerRef.current = parsed;
+        }
+      }
+    } catch {
+      /* livro corrompido: começa do zero (a via pode sair duplicada
+         uma vez — melhor que se perder) */
+      ledgerRef.current = {};
+    }
+  }
 
   async function refreshJobs() {
     try {
       const list = await store.listPrintJobs();
+      loadLedger();
+      pruneLedger(list);
       setJobs(list);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível ler a fila.');
@@ -5662,118 +6546,248 @@ function PrintCenterView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** Quando o diálogo de impressão fecha, a via sai da fila como
-   * impressa (computador). */
+  /** Quando o diálogo de impressão fecha, a cópia da impressora
+   * atual está no papel: resolve a impressão no computador (a
+   * entrega continua no próximo alvo, se houver). */
   useEffect(() => {
     const onAfterPrint = () => {
-      if (!printingJobId) return;
-      const id = printingJobId;
-      setPrintingJobId(null);
-      setPrintAreaJob(null);
-      printingRef.current = false;
-      void store
-        .markPrintJobPrinted(id, 'computer')
-        .then(() => refreshJobs())
-        .catch(() => {
-          setError('A via saiu no papel, mas não foi marcada como impressa.');
-        });
+      const resolve = computerResolveRef.current;
+      computerResolveRef.current = null;
+      printingTargetRef.current = null;
+      setPrintArea(null);
+      if (resolve) resolve(true);
     };
     window.addEventListener('afterprint', onAfterPrint);
     return () => window.removeEventListener('afterprint', onAfterPrint);
-  }, [printingJobId]);
+  }, []);
 
   /** Renderizou a via na área de impressão: abre o diálogo. */
   useEffect(() => {
-    if (!printAreaJob) return;
+    if (!printArea) return;
     const t = setTimeout(() => {
       window.print();
     }, 350);
     // Segurança: se o diálogo nunca fechar (navegador sem suporte),
-    // destrava a fila depois de 2 minutos.
+    // destrava a entrega depois de 2 minutos (a via fica na fila).
     const guard = setTimeout(() => {
-      if (printingRef.current && printingJobId === printAreaJob.id) {
-        printingRef.current = false;
-        setPrintingJobId(null);
-        setPrintAreaJob(null);
+      if (computerResolveRef.current) {
+        const resolve = computerResolveRef.current;
+        computerResolveRef.current = null;
+        printingTargetRef.current = null;
+        setPrintArea(null);
+        resolve(false);
       }
     }, 120000);
     return () => {
       clearTimeout(t);
       clearTimeout(guard);
     };
-  }, [printAreaJob, printingJobId]);
+  }, [printArea]);
 
-  /** Processa a fila sozinha: pega a primeira via pendente e imprime
-   * pelo caminho do setor dela (computador, celular ou simulação). */
-  useEffect(() => {
-    if (loading) return;
-    if (printingRef.current) return;
-    const pending = jobs.filter((j) => j.status === 'pending');
-    if (pending.length === 0) return;
-    const job = pending[0];
-    const cfg = printers.find((p) => p.sector === job.sector);
-    // Sem impressora cadastrada ou desligada: a via fica pendente na
-    // fila, visível, até o dono ligar a impressora (nada some).
-    if (!cfg || !cfg.enabled) return;
-    if (simulation) {
-      void (async () => {
-        await store.markPrintJobPrinted(job.id, 'simulation');
-        await refreshJobs();
-      })();
+  /** Imprime uma cópia no computador e espera o diálogo fechar
+   * (afterprint) — ou a guarda de 2 minutos, quando o diálogo não
+   * fecha. true = saiu no papel. */
+  function printViaComputer(
+    job: PrintJob,
+    target: PrinterConfig,
+  ): Promise<boolean> {
+    return new Promise((resolve) => {
+      computerResolveRef.current = resolve;
+      printingTargetRef.current = { jobId: job.id, printerId: target.id };
+      printSeqRef.current += 1;
+      setPrintArea({
+        job,
+        targetId: target.id,
+        seq: printSeqRef.current,
+      });
+    });
+  }
+
+  /** Escreve os bytes ESC/POS numa característica Bluetooth (em
+   * pedaços — a maioria das térmicas aceita ~180 bytes por escrita
+   * sem resposta). */
+  async function writeBtBytes(char: unknown, bytes: Uint8Array) {
+    const c = char as {
+      writeValueWithoutResponse?: (d: Uint8Array) => Promise<void>;
+      writeValue?: (d: Uint8Array) => Promise<void>;
+    } | null;
+    if (!c) throw new Error('Bluetooth desconectado.');
+    const chunk = 180;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      const slice = bytes.slice(i, i + chunk);
+      if (typeof c.writeValueWithoutResponse === 'function') {
+        await c.writeValueWithoutResponse(slice);
+      } else if (typeof c.writeValue === 'function') {
+        await c.writeValue(slice);
+      } else {
+        throw new Error('Impressora sem escrita Bluetooth.');
+      }
+    }
+  }
+
+  /** Manda a via pelos bytes ESC/POS pra UMA impressora de ponte
+   * celular (a conexão Bluetooth dela). */
+  async function sendViaBluetooth(
+    job: PrintJob,
+    target: PrinterConfig,
+  ): Promise<void> {
+    const char = btCharsRef.current[target.id];
+    if (!char) throw new Error('Bluetooth desconectado.');
+    const bytes = buildEscPosSlip(job, restaurantName);
+    await writeBtBytes(char, bytes);
+  }
+
+  /** Entrega a via a TODAS as impressoras ligadas do setor dela,
+   * uma de cada vez, na ordem cadastrada — e só marca a via como
+   * impressa quando todas receberam. Se uma falhar, a via fica na
+   * fila e o "Tentar de novo" só entrega nas que faltam (o livro de
+   * entregas lembra quem já recebeu). `manual` = botão "Imprimir
+   * agora": ignora o "imprimir automaticamente" e, sem Bluetooth,
+   * imprime pelo sistema avisando. */
+  async function deliverJob(job: PrintJob, opts: { manual: boolean }) {
+    if (deliveringRef.current) return;
+    const num = String(job.order_number).padStart(4, '0');
+    const targets = (printers[job.sector] ?? []).filter((p) => p.enabled);
+    if (targets.length === 0) {
+      setNotice(
+        'Sem impressora cadastrada neste setor — a via fica na fila. Cadastre em Ajustes → Impressoras.',
+      );
       return;
     }
-    if (cfg.bridge === 'computer') {
-      if (!autoPrint) return;
-      printingRef.current = true;
-      setPrintingJobId(job.id);
-      setPrintAreaJob(job);
-      return;
-    }
-    // Ponte do celular: só manda sozinho com o Bluetooth conectado.
-    if (btState === 'connected' && btCharRef.current) {
-      printingRef.current = true;
-      void sendViaBluetooth(job);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobs, printers, simulation, autoPrint, btState, loading]);
-
-  async function sendViaBluetooth(job: PrintJob) {
+    deliveringRef.current = true;
     try {
-      const bytes = buildEscPosSlip(job, restaurantName);
-      const char = btCharRef.current as {
-        writeValueWithoutResponse?: (d: Uint8Array) => Promise<void>;
-        writeValue?: (d: Uint8Array) => Promise<void>;
-      } | null;
-      if (!char) throw new Error('Bluetooth desconectado.');
-      // Escreve em pedaços (a maioria das térmicas aceita ~180 bytes
-      // por escrita sem resposta).
-      const chunk = 180;
-      for (let i = 0; i < bytes.length; i += chunk) {
-        const slice = bytes.slice(i, i + chunk);
-        if (typeof char.writeValueWithoutResponse === 'function') {
-          await char.writeValueWithoutResponse(slice);
-        } else if (typeof char.writeValue === 'function') {
-          await char.writeValue(slice);
+      const already = deliveredOf(job.id);
+      const remaining = printerTargetsForJob(
+        printers,
+        job.sector,
+        already.map((d) => d.id),
+      );
+      if (remaining.length === 0 && already.length > 0) {
+        // Já saiu em todas mas a via não foi marcada (a central
+        // recarregou no meio da entrega): fecha com a última saída.
+        clearLedger(job.id);
+        await store.markPrintJobPrinted(
+          job.id,
+          already[already.length - 1].via,
+        );
+        return;
+      }
+      if (simulation) {
+        for (const t of targets) {
+          recordDelivered(job.id, t.id, 'simulation');
+        }
+        clearLedger(job.id);
+        await store.markPrintJobPrinted(job.id, 'simulation');
+        setNotice(`Via ${num} registrada como impressa (simulação).`);
+        return;
+      }
+      let lastVia: PrintJobVia = 'computer';
+      for (const target of remaining) {
+        if (target.bridge === 'computer') {
+          // Auto desligado: espera o dono ligar (nada some).
+          if (!opts.manual && !autoPrint) return;
+          const ok = await printViaComputer(job, target);
+          if (!ok) {
+            setNotice(
+              'O diálogo de impressão não fechou — a via ficou na fila.',
+            );
+            return;
+          }
+          recordDelivered(job.id, target.id, 'computer');
+          lastVia = 'computer';
         } else {
-          throw new Error('Impressora sem escrita Bluetooth.');
+          const connected =
+            btStates[target.id] === 'connected' &&
+            btCharsRef.current[target.id];
+          if (connected) {
+            try {
+              await sendViaBluetooth(job, target);
+            } catch (e) {
+              await store.markPrintJobFailed(job.id).catch(() => {});
+              setNotice(
+                'Falha no Bluetooth — a via ficou na fila. Verifique a impressora e toque em "Tentar de novo".',
+              );
+              return;
+            }
+            recordDelivered(job.id, target.id, 'phone');
+            lastVia = 'phone';
+          } else if (opts.manual) {
+            // Sem Bluetooth no "Imprimir agora": sai na impressora do
+            // sistema, avisando (não some sem o dono ver).
+            const ok = await printViaComputer(job, target);
+            if (!ok) {
+              setNotice(
+                'O diálogo de impressão não fechou — a via ficou na fila.',
+              );
+              return;
+            }
+            recordDelivered(job.id, target.id, 'computer');
+            lastVia = 'computer';
+            setNotice(
+              `Impressora ${target.name || 'sem nome'} sem Bluetooth — a via saiu na impressora do sistema.`,
+            );
+          } else {
+            // Auto: espera o Bluetooth conectar (nada some).
+            return;
+          }
         }
       }
-      await store.markPrintJobPrinted(job.id, 'phone');
+      clearLedger(job.id);
+      await store.markPrintJobPrinted(job.id, lastVia);
       setNotice(
-        `Via ${String(job.order_number).padStart(4, '0')} impressa no ${printerSectorLabel(job.sector)} (Bluetooth).`,
-      );
-    } catch (e) {
-      await store.markPrintJobFailed(job.id).catch(() => {});
-      setNotice(
-        'Falha no Bluetooth — a via ficou na fila. Verifique a impressora e toque em "Tentar de novo".',
+        targets.length > 1
+          ? `Via ${num} impressa em ${targets.length} impressoras (${printerSectorLabel(job.sector)}).`
+          : `Via ${num} impressa no ${printerSectorLabel(job.sector)}.`,
       );
     } finally {
-      printingRef.current = false;
+      deliveringRef.current = false;
       await refreshJobs();
     }
   }
 
-  async function connectBluetooth() {
+  /** Processa a fila sozinha: pega a primeira via pendente cujo
+   * próximo alvo dá pra entregar agora e entrega em todas as
+   * impressoras ligadas do setor dela. */
+  useEffect(() => {
+    if (loading) return;
+    if (deliveringRef.current) return;
+    const pending = jobs.filter((j) => j.status === 'pending');
+    for (const job of pending) {
+      const delivered = deliveredOf(job.id);
+      const remaining = printerTargetsForJob(
+        printers,
+        job.sector,
+        delivered.map((d) => d.id),
+      );
+      if (remaining.length === 0) {
+        // Já saiu em todas mas a via não foi marcada (a central
+        // recarregou no meio da entrega): fecha a via com a última
+        // saída registrada. Sem impressora ativa, fica pendente.
+        if (delivered.length > 0) {
+          const via = delivered[delivered.length - 1].via;
+          clearLedger(job.id);
+          void store
+            .markPrintJobPrinted(job.id, via)
+            .then(() => refreshJobs());
+        }
+        continue;
+      }
+      const first = remaining[0];
+      const deliverable =
+        simulation ||
+        (first.bridge === 'computer'
+          ? autoPrint
+          : btStates[first.id] === 'connected');
+      if (!deliverable) continue;
+      void deliverJob(job, { manual: false });
+      break;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobs, printers, simulation, autoPrint, btStates, loading]);
+
+  /** Conecta UMA impressora de ponte celular por Bluetooth (o
+   * celular conecta uma por uma — cada uma guarda a sua conexão). */
+  async function connectBluetooth(printer: PrinterConfig) {
     const nav = navigator as unknown as { bluetooth?: {
       requestDevice: (opts: unknown) => Promise<{
         name?: string;
@@ -5786,14 +6800,16 @@ function PrintCenterView({
       }>;
     } };
     if (!nav.bluetooth) {
-      setBtState('unsupported');
-      setBtError(
-        'Este aparelho/navegador não tem Bluetooth web. Use o computador do balcão ou imprima pelo sistema.',
-      );
+      setBtStates((s) => ({ ...s, [printer.id]: 'unsupported' }));
+      setBtErrors((s) => ({
+        ...s,
+        [printer.id]:
+          'Este aparelho/navegador não tem Bluetooth web. Use o computador do balcão ou imprima pelo sistema.',
+      }));
       return;
     }
-    setBtState('connecting');
-    setBtError('');
+    setBtStates((s) => ({ ...s, [printer.id]: 'connecting' }));
+    setBtErrors((s) => ({ ...s, [printer.id]: '' }));
     try {
       const device = await nav.bluetooth.requestDevice({
         acceptAllDevices: true,
@@ -5802,87 +6818,54 @@ function PrintCenterView({
       const server = await device.gatt.connect();
       const service = await server.getPrimaryService(BT_NUS_SERVICE);
       const char = await service.getCharacteristic(BT_NUS_TX);
-      btCharRef.current = char;
+      btCharsRef.current[printer.id] = char;
       device.addEventListener('gattserverdisconnected', () => {
-        btCharRef.current = null;
-        setBtState('disconnected');
+        delete btCharsRef.current[printer.id];
+        setBtStates((s) => ({ ...s, [printer.id]: 'disconnected' }));
       });
-      setBtState('connected');
+      setBtStates((s) => ({ ...s, [printer.id]: 'connected' }));
       setNotice(
-        `Impressora Bluetooth conectada (${device.name ?? 'sem nome'}). As vias do celular saem sozinhas agora.`,
+        `Impressora Bluetooth conectada (${printer.name || device.name || 'sem nome'}). As vias dela saem sozinhas agora.`,
       );
     } catch (e) {
-      btCharRef.current = null;
-      setBtState('error');
-      setBtError(
-        e instanceof Error ? e.message : 'Não foi possível conectar.',
-      );
+      delete btCharsRef.current[printer.id];
+      setBtStates((s) => ({ ...s, [printer.id]: 'error' }));
+      setBtErrors((s) => ({
+        ...s,
+        [printer.id]:
+          e instanceof Error ? e.message : 'Não foi possível conectar.',
+      }));
     }
   }
 
-  async function testBluetooth() {
-    if (btState !== 'connected' || !btCharRef.current) {
+  /** Cupom de teste numa impressora de ponte celular conectada. */
+  async function testBluetooth(printer: PrinterConfig) {
+    const char = btCharsRef.current[printer.id];
+    if (btStates[printer.id] !== 'connected' || !char) {
       setNotice('Conecte a impressora Bluetooth primeiro.');
       return;
     }
     try {
-      const sector =
-        printers.find((p) => p.bridge === 'phone' && p.enabled)?.sector ??
-        'kitchen';
-      const bytes = buildEscPosTestSlip(restaurantName, sector);
-      const char = btCharRef.current as {
-        writeValueWithoutResponse?: (d: Uint8Array) => Promise<void>;
-        writeValue?: (d: Uint8Array) => Promise<void>;
-      };
-      const chunk = 180;
-      for (let i = 0; i < bytes.length; i += chunk) {
-        const slice = bytes.slice(i, i + chunk);
-        if (typeof char.writeValueWithoutResponse === 'function') {
-          await char.writeValueWithoutResponse(slice);
-        } else if (typeof char.writeValue === 'function') {
-          await char.writeValue(slice);
-        }
-      }
-      setNotice('Cupom de teste enviado por Bluetooth.');
+      const bytes = buildEscPosTestSlip(restaurantName, printer.sector);
+      await writeBtBytes(char, bytes);
+      setNotice(
+        `Cupom de teste enviado por Bluetooth (${printer.name || 'sem nome'}).`,
+      );
     } catch {
       setNotice('Falha ao enviar o teste por Bluetooth.');
     }
   }
 
-  /** Imprime uma via agora (botão da fila). */
+  /** Imprime uma via agora (botão da fila): entrega em todas as
+   * impressoras ligadas do setor dela. */
   async function manualPrint(job: PrintJob) {
-    if (printingRef.current) return;
-    const cfg = printers.find((p) => p.sector === job.sector);
-    if (simulation) {
-      await store.markPrintJobPrinted(job.id, 'simulation');
-      setNotice(
-        `Via ${String(job.order_number).padStart(4, '0')} registrada como impressa (simulação).`,
-      );
-      await refreshJobs();
-      return;
-    }
-    if (!cfg || !cfg.enabled) {
-      setNotice(
-        'Sem impressora cadastrada neste setor — a via fica na fila. Cadastre em Ajustes → Impressoras.',
-      );
-      return;
-    }
-    if (cfg.bridge === 'phone') {
-      if (btState === 'connected' && btCharRef.current) {
-        printingRef.current = true;
-        await sendViaBluetooth(job);
-        return;
-      }
-      setNotice(
-        'Bluetooth desligado — imprimindo pelo sistema. Conecte a impressora Bluetooth pra mandar direto.',
-      );
-    }
-    printingRef.current = true;
-    setPrintingJobId(job.id);
-    setPrintAreaJob(job);
+    await deliverJob(job, { manual: true });
   }
 
+  /** Reimprimir: volta pra fila e sai DE NOVO em todas as
+   * impressoras do setor (o livro de entregas é zerado). */
   async function reprint(job: PrintJob) {
+    clearLedger(job.id);
     await store.retryPrintJob(job.id);
     setNotice(
       `Via ${String(job.order_number).padStart(4, '0')} voltou pra fila pra imprimir de novo.`,
@@ -5890,6 +6873,8 @@ function PrintCenterView({
     await refreshJobs();
   }
 
+  /** Tentar de novo (via com falha): volta pra fila e só entrega
+   * nas impressoras que ainda não receberam (o livro é mantido). */
   async function retryFailed(job: PrintJob) {
     await store.retryPrintJob(job.id);
     setNotice(
@@ -5904,9 +6889,11 @@ function PrintCenterView({
     .filter((j) => j.status === 'printed')
     .slice(-10)
     .reverse();
-  const hasPhoneBridge = printers.some(
-    (p) => p.bridge === 'phone' && p.enabled,
-  );
+  const btStateOf = (id: string): BtState =>
+    btStates[id] ?? 'disconnected';
+  const btErrorsList = Object.entries(btErrors)
+    .filter(([, v]) => v)
+    .map(([, v]) => v);
   const totalItems = (j: PrintJob) =>
     j.items.reduce((s, i) => s + i.qty, 0);
 
@@ -5948,30 +6935,71 @@ function PrintCenterView({
             <div className="card">
               <h2 style={{ marginTop: 0 }}>Impressoras por setor</h2>
               {PRINT_SECTORS.map((sector) => {
-                const cfg = printers.find((p) => p.sector === sector);
+                const list = printers[sector] ?? [];
                 const pending = pendingJobs.filter(
                   (j) => j.sector === sector,
                 ).length;
                 return (
                   <div key={sector} className="printer-status">
-                    <div>
-                      <strong>{printerSectorLabel(sector)}</strong>
-                      <div className="hint">
-                        {cfg
-                          ? `${cfg.name || 'Sem nome'} · ${printerConnectionLabel(cfg.connection)} · ${printerBridgeLabel(cfg.bridge)}${cfg.enabled ? '' : ' · desligada'}`
-                          : 'Sem impressora cadastrada'}
-                      </div>
-                      {cfg?.bridge === 'phone' && (
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <strong>
+                        {printerSectorLabel(sector)} ({list.length})
+                      </strong>
+                      {list.length === 0 ? (
                         <div className="hint">
-                          Bluetooth:{' '}
-                          {btState === 'connected'
-                            ? 'conectado'
-                            : btState === 'connecting'
-                              ? 'conectando…'
-                              : btState === 'unsupported'
-                                ? 'não disponível neste aparelho'
-                                : 'desligado'}
+                          Sem impressora cadastrada
                         </div>
+                      ) : (
+                        list.map((p) => (
+                          <div key={p.id} className="printer-status-row">
+                            <div>
+                              <div className="hint">
+                                {p.name || 'Sem nome'} ·{' '}
+                                {printerConnectionLabel(p.connection)} ·{' '}
+                                {printerBridgeLabel(p.bridge)}
+                                {p.enabled ? '' : ' · desligada'}
+                              </div>
+                              {p.bridge === 'phone' && (
+                                <div className="hint">
+                                  Bluetooth:{' '}
+                                  {btStateOf(p.id) === 'connected'
+                                    ? 'conectado'
+                                    : btStateOf(p.id) === 'connecting'
+                                      ? 'conectando…'
+                                      : btStateOf(p.id) === 'unsupported'
+                                        ? 'não disponível neste aparelho'
+                                        : 'desligado'}
+                                </div>
+                              )}
+                            </div>
+                            {p.bridge === 'phone' && (
+                              <div className="printer-bt-btns">
+                                <button
+                                  className="btn btn-white"
+                                  disabled={
+                                    btStateOf(p.id) === 'connecting' ||
+                                    btStateOf(p.id) === 'connected'
+                                  }
+                                  onClick={() => void connectBluetooth(p)}
+                                >
+                                  {btStateOf(p.id) === 'connected'
+                                    ? 'Bluetooth conectado'
+                                    : btStateOf(p.id) === 'connecting'
+                                      ? 'Conectando…'
+                                      : 'Conectar Bluetooth'}
+                                </button>
+                                {btStateOf(p.id) === 'connected' && (
+                                  <button
+                                    className="btn btn-white"
+                                    onClick={() => void testBluetooth(p)}
+                                  >
+                                    Testar Bluetooth
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ))
                       )}
                     </div>
                     <span
@@ -6019,38 +7047,20 @@ function PrintCenterView({
                   Modo simulação (sem impressora ligada)
                 </label>
               </div>
-              {hasPhoneBridge && (
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <button
-                    className="btn btn-purple"
-                    disabled={
-                      btState === 'connecting' || btState === 'connected'
-                    }
-                    onClick={() => void connectBluetooth()}
-                  >
-                    {btState === 'connected'
-                      ? 'Bluetooth conectado'
-                      : btState === 'connecting'
-                        ? 'Conectando…'
-                        : 'Conectar impressora Bluetooth'}
-                  </button>
-                  {btState === 'connected' && (
-                    <button
-                      className="btn btn-white"
-                      onClick={() => void testBluetooth()}
-                    >
-                      Testar Bluetooth
-                    </button>
-                  )}
+              {btErrorsList.map((msg, i) => (
+                <div key={i} className="error">
+                  {msg}
                 </div>
-              )}
-              {btError && <div className="error">{btError}</div>}
+              ))}
               <p className="hint">
                 No computador do balcão, pra imprimir sem pedir
                 confirmação a cada cupom, abra o Chrome com a opção
                 --kiosk-printing. Sem ela, o diálogo de impressão abre
                 uma vez por cupom — a via só sai da fila depois que
-                você confirma.
+                você confirma. E atenção: o navegador só imprime na
+                impressora padrão do sistema — se um setor tiver duas
+                impressoras no mesmo computador, as duas vias saem na
+                padrão (uma cópia por impressora).
               </p>
             </div>
 
@@ -6096,8 +7106,24 @@ function PrintCenterView({
                     </div>
                   ))}
                   {pendingJobs.map((job) => {
-                    const cfg = printers.find((p) => p.sector === job.sector);
-                    const noPrinter = !cfg || !cfg.enabled;
+                    const targets = (printers[job.sector] ?? []).filter(
+                      (p) => p.enabled,
+                    );
+                    const delivered = deliveredOf(job.id);
+                    const remaining = printerTargetsForJob(
+                      printers,
+                      job.sector,
+                      delivered.map((d) => d.id),
+                    );
+                    const noPrinter = targets.length === 0;
+                    const printerName = (id: string) =>
+                      (printers[job.sector] ?? []).find((p) => p.id === id)
+                        ?.name || 'sem nome';
+                    const waitingBt = remaining.filter(
+                      (t) =>
+                        t.bridge === 'phone' &&
+                        btStateOf(t.id) !== 'connected',
+                    );
                     return (
                       <div key={job.id} className="print-job">
                         <div>
@@ -6109,7 +7135,11 @@ function PrintCenterView({
                             Mesa {job.table_number} ·{' '}
                             {formatTime(job.created_at)} · Garçom{' '}
                             {job.waiter_name} · {totalItems(job)} item(ns)
-                            {cfg ? ` · ${printerBridgeLabel(cfg.bridge)}` : ''}
+                            {targets.length === 1
+                              ? ` · ${printerBridgeLabel(targets[0].bridge)}`
+                              : targets.length > 1
+                                ? ` · ${targets.length} impressoras neste setor`
+                                : ''}
                           </div>
                           {noPrinter && (
                             <div className="hint" style={{ color: '#b45309' }}>
@@ -6118,21 +7148,34 @@ function PrintCenterView({
                               Impressoras.
                             </div>
                           )}
-                          {cfg?.bridge === 'phone' &&
-                            btState !== 'connected' && (
-                              <div
-                                className="hint"
-                                style={{ color: '#b45309' }}
-                              >
-                                Aguardando o Bluetooth — conecte a
-                                impressora acima.
+                          {delivered.length > 0 &&
+                            remaining.length > 0 && (
+                              <div className="hint">
+                                Já saiu em:{' '}
+                                {delivered.map((d) => printerName(d.id)).join(', ')} —
+                                falta:{' '}
+                                {remaining
+                                  .map((t) => t.name || 'sem nome')
+                                  .join(', ')}
                               </div>
                             )}
+                          {waitingBt.length > 0 && (
+                            <div
+                              className="hint"
+                              style={{ color: '#b45309' }}
+                            >
+                              Aguardando o Bluetooth — conecte{' '}
+                              {waitingBt
+                                .map((t) => t.name || 'a impressora')
+                                .join(', ')}{' '}
+                              acima.
+                            </div>
+                          )}
                         </div>
                         <div className="print-job-btns">
                           <button
                             className="btn btn-orange"
-                            disabled={printingRef.current}
+                            disabled={deliveringRef.current}
                             onClick={() => void manualPrint(job)}
                           >
                             Imprimir agora
@@ -6227,9 +7270,9 @@ function PrintCenterView({
       {/* Área de impressão do computador: fora da tela, só aparece no
           papel (CSS @media print). */}
       <div id="print-area" aria-hidden="true">
-        {printAreaJob && (
+        {printArea && (
           <PrintJobSlip
-            job={printAreaJob}
+            job={printArea.job}
             restaurantName={restaurantName}
           />
         )}
@@ -6252,8 +7295,8 @@ function OwnerSettingsView({
   settings: Settings;
   restaurantName: string;
   ownerName: string;
-  /** impressoras cadastradas (uma por setor) */
-  printers: PrinterConfig[];
+  /** impressoras cadastradas (listas por setor) */
+  printers: PrintersConfig;
   onSaved: () => Promise<void>;
   onSavedPrinters: () => Promise<void>;
   onOpenPrintCenter: () => void;
@@ -6261,34 +7304,52 @@ function OwnerSettingsView({
   onLogout: () => void;
 }) {
   const [fee, setFee] = useState(String(settings.service_fee_pct));
-  /** rascunho das impressoras (3 setores) — salvo à parte dos ajustes */
-  const [draft, setDraft] = useState<PrinterConfig[]>(() =>
-    PRINT_SECTORS.map((sector) => {
-      const found = (printers ?? []).find((p) => p.sector === sector);
-      return (
-        found ?? {
-          sector,
-          name: '',
-          connection: 'usb',
-          bridge: 'computer',
-          enabled: false,
-        }
-      );
-    }),
+  /** rascunho das impressoras (listas por setor) — salvo à parte
+   * dos ajustes, só quando o dono aperta "Salvar impressoras". */
+  const [draft, setDraft] = useState<PrintersConfig>(() =>
+    JSON.parse(JSON.stringify(normalizePrinters(printers))),
   );
   const [printersSaved, setPrintersSaved] = useState(false);
   const [printersBusy, setPrintersBusy] = useState(false);
   const [printersError, setPrintersError] = useState('');
-  /** cupom de teste em prévia (modal) */
+  /** cupom de teste em prévia (modal) — de uma impressora só */
   const [testJob, setTestJob] = useState<PrintJob | null>(null);
+  const [testPrinter, setTestPrinter] = useState<PrinterConfig | null>(null);
 
-  function setDraftSector(
+  function updatePrinter(
     sector: PrinterSector,
+    id: string,
     patch: Partial<PrinterConfig>,
   ) {
-    setDraft((prev) =>
-      prev.map((p) => (p.sector === sector ? { ...p, ...patch } : p)),
-    );
+    setDraft((prev) => ({
+      ...prev,
+      [sector]: prev[sector].map((p) =>
+        p.id === id ? { ...p, ...patch } : p,
+      ),
+    }));
+  }
+
+  /** Adiciona uma impressora nova no setor (impressão automática
+   * ligada por padrão — é só dar o nome e salvar). */
+  function addPrinter(sector: PrinterSector) {
+    const fresh: PrinterConfig = {
+      id: store.newId(),
+      sector,
+      name: '',
+      connection: 'usb',
+      bridge: 'computer',
+      enabled: true,
+    };
+    setDraft((prev) => ({ ...prev, [sector]: [...prev[sector], fresh] }));
+    setPrintersSaved(false);
+  }
+
+  function removePrinter(sector: PrinterSector, id: string) {
+    setDraft((prev) => ({
+      ...prev,
+      [sector]: prev[sector].filter((p) => p.id !== id),
+    }));
+    setPrintersSaved(false);
   }
 
   async function savePrinters() {
@@ -6296,12 +7357,23 @@ function OwnerSettingsView({
     setPrintersSaved(false);
     setPrintersBusy(true);
     try {
-      // Só grava os setores com nome (setor sem nome = sem impressora).
-      const list = draft
-        .filter((p) => p.name.trim().length > 0)
-        .map((p) => ({ ...p, name: p.name.trim() }));
+      // Só grava as impressoras com nome (cartão sem nome = rascunho
+      // vazio que o dono ainda não preencheu).
+      const list: PrintersConfig = {
+        kitchen: [],
+        bar: [],
+        counter: [],
+      };
+      for (const sector of PRINT_SECTORS) {
+        list[sector] = draft[sector]
+          .filter((p) => p.name.trim().length > 0)
+          .map((p) => ({ ...p, name: p.name.trim() }));
+      }
       await store.savePrinterConfig(list);
       await onSavedPrinters();
+      // O rascunho passa a refletir o que foi salvo (sem os cartões
+      // vazios que foram descartados).
+      setDraft(JSON.parse(JSON.stringify(normalizePrinters(list))));
       setPrintersSaved(true);
     } catch (e) {
       setPrintersError(
@@ -6312,10 +7384,11 @@ function OwnerSettingsView({
     }
   }
 
-  /** Monta o cupom de teste de um setor (prévia + impressão). */
-  function openTest(sector: PrinterSector) {
+  /** Monta o cupom de teste de UMA impressora (prévia + impressão). */
+  function openTest(printer: PrinterConfig) {
+    const sector = printer.sector;
     const job: PrintJob = {
-      id: 'teste-' + sector,
+      id: 'teste-' + printer.id,
       sector,
       kind: sector === 'counter' ? 'close' : 'send',
       order_number: 0,
@@ -6347,6 +7420,7 @@ function OwnerSettingsView({
       status: 'pending',
       created_at: new Date().toISOString(),
     };
+    setTestPrinter(printer);
     setTestJob(job);
   }
   const [commission, setCommission] = useState(
@@ -6392,7 +7466,7 @@ function OwnerSettingsView({
   }
 
   return (
-    <div className="app app-owner">
+    <div className="app app-owner fin-theme">
       <OwnerHeader
         tab="settings"
         restaurantName={restaurantName}
@@ -6448,96 +7522,128 @@ function OwnerSettingsView({
         </div>
 
         {/* Impressoras térmicas — o dono liga sozinho, sem técnico:
-            cadastra a impressora de cada setor (nome, ligação e ponte),
-            testa e abre a central de impressão. */}
+            cada setor (cozinha, bar, balcão) pode ter MAIS DE UMA
+            impressora: cadastra o nome, a ligação e a ponte de cada
+            uma, testa uma por uma e abre a central de impressão. A
+            via do setor sai em todas as impressoras ligadas dele. */}
         <div className="card">
           <h2>Impressoras</h2>
           <p className="hint" style={{ marginTop: 0 }}>
-            Cada setor tem a sua impressora térmica (80mm, ESC/POS — a
-            que você já tem no restaurante). Escolha por onde a via
-            chega até ela: pelo computador do balcão ou pelo celular
-            parado no balcão (Bluetooth). Depois é só apertar
-            "Testar" — sai um cupom de teste.
+            Cada setor pode ter mais de uma impressora térmica (80mm,
+            ESC/POS — a que você já tem no restaurante). Aperte
+            "Adicionar impressora" no setor e preencha o nome, como ela
+            liga e por onde a via chega até ela: pelo computador do
+            balcão ou pelo celular parado no balcão (Bluetooth). Depois
+            é só apertar "Testar" em cada uma — sai um cupom de teste.
           </p>
           {printersError && <div className="error">{printersError}</div>}
           {printersSaved && (
             <div className="ok-note">Impressoras salvas.</div>
           )}
-          {draft.map((cfg) => (
-            <div key={cfg.sector} className="printer-card">
-              <strong>{printerSectorLabel(cfg.sector)}</strong>
-              <div className="field">
-                <label htmlFor={`printer-name-${cfg.sector}`}>
-                  Nome da impressora
-                </label>
-                <input
-                  id={`printer-name-${cfg.sector}`}
-                  placeholder="Ex.: Bematech da cozinha"
-                  value={cfg.name}
-                  onChange={(e) =>
-                    setDraftSector(cfg.sector, { name: e.target.value })
-                  }
-                />
-              </div>
-              <div className="field">
-                <label htmlFor={`printer-conn-${cfg.sector}`}>
-                  Como ela liga
-                </label>
-                <select
-                  id={`printer-conn-${cfg.sector}`}
-                  value={cfg.connection}
-                  onChange={(e) =>
-                    setDraftSector(cfg.sector, {
-                      connection: e.target.value as PrinterConnection,
-                    })
-                  }
-                >
-                  <option value="usb">USB</option>
-                  <option value="bluetooth">Bluetooth</option>
-                  <option value="wifi">Wi-Fi ou rede</option>
-                </select>
-              </div>
-              <div className="field">
-                <label htmlFor={`printer-bridge-${cfg.sector}`}>
-                  Quem leva a via até ela
-                </label>
-                <select
-                  id={`printer-bridge-${cfg.sector}`}
-                  value={cfg.bridge}
-                  onChange={(e) =>
-                    setDraftSector(cfg.sector, {
-                      bridge: e.target.value as PrinterBridge,
-                    })
-                  }
-                >
-                  <option value="computer">Computador do balcão</option>
-                  <option value="phone">Celular na central</option>
-                </select>
-                <p className="hint" style={{ marginTop: 6, marginBottom: 0 }}>
-                  {cfg.bridge === 'computer'
-                    ? 'O computador do balcão fica com a central aberta e imprime pelo navegador.'
-                    : 'Um celular velho parado no balcão, com a central aberta, manda a via por Bluetooth.'}
+          {PRINT_SECTORS.map((sector) => (
+            <div key={sector} className="printer-sector">
+              <strong>
+                {printerSectorLabel(sector)} ({draft[sector].length})
+              </strong>
+              {draft[sector].length === 0 && (
+                <p className="hint" style={{ margin: '6px 0' }}>
+                  Nenhuma impressora neste setor — as vias ficam na fila
+                  da central como pendentes.
                 </p>
-              </div>
-              <div className="field">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={cfg.enabled}
-                    onChange={(e) =>
-                      setDraftSector(cfg.sector, {
-                        enabled: e.target.checked,
-                      })
-                    }
-                  />{' '}
-                  Impressão automática ligada
-                </label>
-              </div>
+              )}
+              {draft[sector].map((cfg) => (
+                <div key={cfg.id} className="printer-card">
+                  <div className="printer-card-head">
+                    <strong>{cfg.name.trim() || 'Nova impressora'}</strong>
+                    <button
+                      className="btn btn-danger-ghost"
+                      onClick={() => removePrinter(sector, cfg.id)}
+                    >
+                      Remover
+                    </button>
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`printer-name-${cfg.id}`}>
+                      Nome da impressora
+                    </label>
+                    <input
+                      id={`printer-name-${cfg.id}`}
+                      placeholder="Ex.: Bematech da cozinha"
+                      value={cfg.name}
+                      onChange={(e) =>
+                        updatePrinter(sector, cfg.id, {
+                          name: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`printer-conn-${cfg.id}`}>
+                      Como ela liga
+                    </label>
+                    <select
+                      id={`printer-conn-${cfg.id}`}
+                      value={cfg.connection}
+                      onChange={(e) =>
+                        updatePrinter(sector, cfg.id, {
+                          connection: e.target.value as PrinterConnection,
+                        })
+                      }
+                    >
+                      <option value="usb">USB</option>
+                      <option value="bluetooth">Bluetooth</option>
+                      <option value="wifi">Wi-Fi ou rede</option>
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`printer-bridge-${cfg.id}`}>
+                      Quem leva a via até ela
+                    </label>
+                    <select
+                      id={`printer-bridge-${cfg.id}`}
+                      value={cfg.bridge}
+                      onChange={(e) =>
+                        updatePrinter(sector, cfg.id, {
+                          bridge: e.target.value as PrinterBridge,
+                        })
+                      }
+                    >
+                      <option value="computer">Computador do balcão</option>
+                      <option value="phone">Celular na central</option>
+                    </select>
+                    <p className="hint" style={{ marginTop: 6, marginBottom: 0 }}>
+                      {cfg.bridge === 'computer'
+                        ? 'O computador do balcão fica com a central aberta e imprime pelo navegador.'
+                        : 'Um celular velho parado no balcão, com a central aberta, manda a via por Bluetooth.'}
+                    </p>
+                  </div>
+                  <div className="field">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={cfg.enabled}
+                        onChange={(e) =>
+                          updatePrinter(sector, cfg.id, {
+                            enabled: e.target.checked,
+                          })
+                        }
+                      />{' '}
+                      Impressão automática ligada
+                    </label>
+                  </div>
+                  <button
+                    className="btn btn-white"
+                    onClick={() => openTest(cfg)}
+                  >
+                    Testar
+                  </button>
+                </div>
+              ))}
               <button
                 className="btn btn-white"
-                onClick={() => openTest(cfg.sector)}
+                onClick={() => addPrinter(sector)}
               >
-                Testar
+                + Adicionar impressora
               </button>
             </div>
           ))}
@@ -6556,7 +7662,11 @@ function OwnerSettingsView({
           <p className="hint">
             Sem impressora cadastrada, a via fica na fila da central como
             pendente — nada se perde. Pra testar sem hardware, ligue o
-            modo simulação na central.
+            modo simulação na central. No computador do balcão, as vias
+            saem na impressora padrão do sistema: se um setor tiver
+            duas impressoras USB no mesmo computador, as duas vias saem
+            na padrão — pra sair uma em cada, deixe uma no computador e
+            outra no celular, ou abra a central num segundo computador.
           </p>
         </div>
       </div>
@@ -6565,14 +7675,13 @@ function OwnerSettingsView({
         <div className="modal-backdrop">
           <div className="modal">
             <h3 style={{ marginTop: 0 }}>
-              Teste — {printerSectorLabel(testJob.sector)}
+              Teste — {testPrinter?.name.trim() || 'Nova impressora'} ·{' '}
+              {printerSectorLabel(testJob.sector)}
             </h3>
-            {!(draft.find((p) => p.sector === testJob.sector)?.name ?? '')
-              .trim() && (
+            {!(testPrinter?.name ?? '').trim() && (
               <div className="print-sim-banner">
-                Simulação — nenhuma impressora cadastrada neste setor.
-                Cadastre o nome acima e salve, ou teste na central de
-                impressão.
+                Simulação — esta impressora ainda não tem nome. Dê um
+                nome acima e salve, ou teste na central de impressão.
               </div>
             )}
             <PrintJobSlip
