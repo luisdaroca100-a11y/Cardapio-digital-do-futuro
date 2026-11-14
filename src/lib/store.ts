@@ -17,6 +17,7 @@ import {
   type Product,
   type Restaurant,
   type Settings,
+  type SubscriptionStatus,
   type Waiter,
 } from './types.ts';
 
@@ -496,6 +497,94 @@ export function trialStatus(
 }
 
 /**
+ * Tolerância após o paid_until pra retentativa do Mercado Pago:
+ * parcela recusada entra em `recycling` (até 4 tentativas em 10
+ * dias) — o restaurante continua aberto por 3 dias depois do
+ * vencimento. Fim do trial sem assinatura NÃO tem tolerância:
+ * bloqueia na hora (não há pagamento em retentativa).
+ */
+export const ACCESS_GRACE_DAYS = 3;
+
+/** Estado de acesso derivado: 'trial' | 'active' | 'blocked'. */
+export type AccessState = 'trial' | 'active' | 'blocked';
+
+export interface AccessStatus {
+  state: AccessState;
+  /** dias restantes (trial ou até o paid_until; 0 quando bloqueado
+   * ou na tolerância) */
+  daysLeft: number;
+  /** fim do período grátis (cadastro + 3 dias) */
+  trialEnd: Date;
+  /** até quando a assinatura está paga (null = nunca pagou) */
+  paidUntil: Date | null;
+  /** true quando está ativo só pela tolerância (paid_until já passou,
+   * pagamento em retentativa no Mercado Pago) */
+  inGrace: boolean;
+}
+
+/**
+ * Estado de acesso de um restaurante — puro, com `now` injetável:
+ *  - trial: agora < fim do trial (cadastro + 3 dias)
+ *  - active: assinatura autorizada ('active' ou 'past_due') E agora
+ *    <= paid_until + 3 dias de tolerância
+ *  - blocked: resto — trial acabado sem assinatura, assinatura
+ *    cancelada, status desconhecido, ou paid_until vencido fora da
+ *    tolerância. Status desconhecido = não-liberado, nunca liberado
+ *    por palpite.
+ */
+export function accessStatus(
+  restaurant: Restaurant,
+  now: Date = new Date(),
+): AccessStatus {
+  const trial = trialStatus(restaurant.created_at, now);
+  const paidUntil = restaurant.paid_until
+    ? new Date(restaurant.paid_until)
+    : null;
+  const paidUntilValid = paidUntil !== null && !Number.isNaN(paidUntil.getTime());
+  if (trial.inTrial) {
+    return {
+      state: 'trial',
+      daysLeft: trial.daysLeft,
+      trialEnd: trial.end,
+      paidUntil: paidUntilValid ? paidUntil : null,
+      inGrace: false,
+    };
+  }
+  const status = restaurant.subscription_status ?? null;
+  if (
+    (status === 'active' || status === 'past_due') &&
+    paidUntilValid &&
+    (paidUntil as Date).getTime() + ACCESS_GRACE_DAYS * 24 * 60 * 60 * 1000 >=
+      now.getTime()
+  ) {
+    const diffMs = (paidUntil as Date).getTime() - now.getTime();
+    return {
+      state: 'active',
+      daysLeft: Math.max(0, Math.ceil(diffMs / (24 * 60 * 60 * 1000))),
+      trialEnd: trial.end,
+      paidUntil: paidUntil as Date,
+      inGrace: diffMs < 0,
+    };
+  }
+  return {
+    state: 'blocked',
+    daysLeft: 0,
+    trialEnd: trial.end,
+    paidUntil: paidUntilValid ? paidUntil : null,
+    inGrace: false,
+  };
+}
+
+/** true quando o restaurante está bloqueado por falta de pagamento. */
+export function isAccessBlocked(
+  restaurant: Restaurant | null | undefined,
+  now: Date = new Date(),
+): boolean {
+  if (!restaurant) return false;
+  return accessStatus(restaurant, now).state === 'blocked';
+}
+
+/**
  * Cadastro sozinho (self-service): o dono informa o nome do
  * restaurante, o nome dele, o login e a senha; cria o restaurante +
  * o dono e já deixa o restaurante ativo. Por enquanto o acesso é
@@ -563,6 +652,71 @@ export async function registerRestaurant(input: {
   if (error) throw error;
   setActiveRestaurant(restaurant.id);
   return { restaurant, owner: data as Owner };
+}
+
+/** Campos da assinatura que o webhook / checkout atualizam no banco. */
+export interface RestaurantSubscriptionPatch {
+  subscription_status?: SubscriptionStatus | null;
+  mp_preapproval_id?: string | null;
+  paid_until?: string | null;
+  billing_email?: string | null;
+}
+
+/**
+ * Atualiza a assinatura de um restaurante (status, id da
+ * pré-aprovação no Mercado Pago, paid_until, e-mail de cobrança).
+ * Vale no Supabase e no modo local. Não mexe em mais nada.
+ */
+export async function updateRestaurantSubscription(
+  id: string,
+  patch: RestaurantSubscriptionPatch,
+): Promise<void> {
+  if (!isSupabase) {
+    const db = loadLocal();
+    const r = db.restaurants.find((x) => x.id === id);
+    if (!r) return;
+    if (patch.subscription_status !== undefined) {
+      r.subscription_status = patch.subscription_status;
+    }
+    if (patch.mp_preapproval_id !== undefined) {
+      r.mp_preapproval_id = patch.mp_preapproval_id;
+    }
+    if (patch.paid_until !== undefined) r.paid_until = patch.paid_until;
+    if (patch.billing_email !== undefined) {
+      r.billing_email = patch.billing_email;
+    }
+    saveLocal(db);
+    return;
+  }
+  const { error } = await sb().from('restaurants').update(patch).eq('id', id);
+  if (error) throw error;
+}
+
+/**
+ * Muda o plano escolhido e o e-mail de cobrança de um restaurante
+ * (usado pelo checkout, quando o dono assina). Não libera o acesso
+ * sozinho: a liberação vem do webhook, quando o Mercado Pago
+ * confirma a assinatura autorizada.
+ */
+export async function updateRestaurantPlan(
+  id: string,
+  plan: PlanId,
+  billingEmail: string,
+): Promise<void> {
+  if (!isSupabase) {
+    const db = loadLocal();
+    const r = db.restaurants.find((x) => x.id === id);
+    if (!r) return;
+    r.plan = plan;
+    r.billing_email = billingEmail;
+    saveLocal(db);
+    return;
+  }
+  const { error } = await sb()
+    .from('restaurants')
+    .update({ plan, billing_email: billingEmail })
+    .eq('id', id);
+  if (error) throw error;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1423,6 +1577,14 @@ export async function createOrder(
   waiter: Waiter,
 ): Promise<Order> {
   const rid = requireRestaurantId();
+  // Trava de pagamento: com o acesso bloqueado não abre mesa nova
+  // (mesa já aberta ainda pode ser fechada — closeOrder não trava).
+  const restaurant = await getRestaurant(rid);
+  if (restaurant && accessStatus(restaurant).state === 'blocked') {
+    throw new Error(
+      'Assinatura bloqueada — o período grátis acabou. O dono precisa escolher um plano para continuar.',
+    );
+  }
   const order: Order = {
     id: newId(),
     restaurant_id: rid,
@@ -1615,6 +1777,17 @@ export async function cleanupEmptyOrders(): Promise<number> {
 
 /** Marca os itens ainda não enviados como enviados (vão p/ cozinha/bar). */
 export async function sendOrder(orderId: string): Promise<void> {
+  // Trava de pagamento: com o acesso bloqueado não envia pedido novo
+  // pra cozinha/bar (mesa já aberta ainda pode ser fechada).
+  const rid = getActiveRestaurantId();
+  if (rid) {
+    const restaurant = await getRestaurant(rid);
+    if (restaurant && accessStatus(restaurant).state === 'blocked') {
+      throw new Error(
+        'Assinatura bloqueada — o período grátis acabou. O dono precisa escolher um plano para continuar.',
+      );
+    }
+  }
   if (!isSupabase) {
     const db = loadLocal();
     db.items.forEach((i) => {
@@ -1623,12 +1796,12 @@ export async function sendOrder(orderId: string): Promise<void> {
     saveLocal(db);
     return;
   }
-  const rid = requireRestaurantId();
+  const ridChecked = requireRestaurantId();
   const { error } = await sb()
     .from('order_items')
     .update({ sent: true })
     .eq('order_id', orderId)
-    .eq('restaurant_id', rid)
+    .eq('restaurant_id', ridChecked)
     .eq('sent', false);
   if (error) throw error;
 }

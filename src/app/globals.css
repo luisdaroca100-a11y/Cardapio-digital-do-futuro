@@ -3275,3 +3275,99 @@ select {
     border: none;
   }
 }
+
+/* ------------------------------------------------------------
+ * Planos do dono (pagamento automático — Mercado Pago).
+ * Paleta do painel do dono: fundo #17110c, dourado #e8c15a,
+ * laranja #f26a3d. Prefixo .plans- (tela OwnerPlansView).
+ * ------------------------------------------------------------ */
+.fin-theme .plans-status .fin-section-sub {
+  color: var(--fin-ink);
+}
+.fin-theme .plans-status .fin-section-sub strong {
+  color: var(--fin-gold);
+}
+.plans-notice {
+  background: rgba(232, 193, 90, 0.14);
+  border: 1px solid var(--fin-gold-deep);
+  color: var(--fin-ink);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  margin: 0 0 12px;
+}
+.plans-field {
+  margin: 0 0 14px;
+}
+.plans-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+@media (max-width: 520px) {
+  .plans-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.plans-card {
+  position: relative;
+  background: var(--fin-card-2);
+  border: 1px solid var(--fin-line);
+  border-radius: 12px;
+  padding: 16px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.plans-card.plans-current {
+  border-color: var(--fin-gold);
+  box-shadow: 0 0 0 1px var(--fin-gold);
+}
+.plans-badge {
+  position: absolute;
+  top: -10px;
+  right: 10px;
+  background: var(--fin-gold);
+  color: #17110c;
+  font-size: 11px;
+  font-weight: 800;
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+.plans-name {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--fin-ink);
+}
+.plans-price {
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--fin-gold);
+  line-height: 1.1;
+}
+.plans-per {
+  font-size: 13px;
+  color: var(--fin-muted);
+  margin-bottom: 8px;
+}
+.plans-current-tag {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fin-gold);
+  border: 1px solid var(--fin-gold-deep);
+  border-radius: 999px;
+  padding: 2px 8px;
+  margin-bottom: 8px;
+}
+.plans-subscribe {
+  width: 100%;
+  margin-top: auto;
+}
+.plans-note {
+  font-size: 13px;
+  color: var(--fin-muted);
+  margin: 0 0 10px;
+  line-height: 1.5;
+}

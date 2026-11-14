@@ -21,12 +21,32 @@ create table if not exists public.restaurants (
   id uuid primary key,
   name text not null,
   plan text check (plan in ('monthly', 'annual')),
+  -- Assinatura do Mercado Pago (pagamento automático):
+  -- subscription_status: 'trial' | 'active' | 'past_due' | 'canceled'
+  -- mp_preapproval_id: id da pré-aprovação (assinatura) no MP
+  -- paid_until: até quando a assinatura está paga (valem +3 dias de
+  --   tolerância pra retentativa do MP — ver accessStatus)
+  -- billing_email: e-mail usado na assinatura (quem paga)
+  subscription_status text
+    check (subscription_status in ('trial', 'active', 'past_due', 'canceled')),
+  mp_preapproval_id text,
+  paid_until timestamptz,
+  billing_email text,
   created_at timestamptz not null default now()
 );
 
 -- Para bancos criados com a versão anterior do schema (sem a coluna):
 alter table public.restaurants
   add column if not exists plan text check (plan in ('monthly', 'annual'));
+alter table public.restaurants
+  add column if not exists subscription_status text
+    check (subscription_status in ('trial', 'active', 'past_due', 'canceled'));
+alter table public.restaurants
+  add column if not exists mp_preapproval_id text;
+alter table public.restaurants
+  add column if not exists paid_until timestamptz;
+alter table public.restaurants
+  add column if not exists billing_email text;
 
 -- Administrador da plataforma (só o Luis) — vê QUAIS restaurantes
 -- estão cadastrados (nome, dono, data, nº de garçons). NÃO vê

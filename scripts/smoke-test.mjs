@@ -28,6 +28,7 @@ const store = await import(new URL('../src/lib/store.ts', import.meta.url));
 const escpos = await import(new URL('../src/lib/escpos.ts', import.meta.url));
 const types = await import(new URL('../src/lib/types.ts', import.meta.url));
 const menuOcr = await import(new URL('../src/lib/menuOcr.ts', import.meta.url));
+const mp = await import(new URL('../src/lib/mp.ts', import.meta.url));
 const pageSrc = readFileSync(path.join(ROOT, 'src/app/page.tsx'), 'utf8');
 const admSrc = readFileSync(path.join(ROOT, 'src/app/adm/page.tsx'), 'utf8');
 const storeSrc = readFileSync(path.join(ROOT, 'src/lib/store.ts'), 'utf8');
@@ -40,6 +41,25 @@ const mediaSrc = readFileSync(
 );
 const layoutSrc = readFileSync(path.join(ROOT, 'src/app/layout.tsx'), 'utf8');
 const logoSrc = readFileSync(path.join(ROOT, 'src/lib/logo.ts'), 'utf8');
+const typesSrc = readFileSync(path.join(ROOT, 'src/lib/types.ts'), 'utf8');
+const mpSrc = readFileSync(path.join(ROOT, 'src/lib/mp.ts'), 'utf8');
+const mpSqlSrc = readFileSync(
+  path.join(ROOT, 'supabase-pagamento-mp.sql'),
+  'utf8',
+);
+const checkoutSrc = readFileSync(
+  path.join(ROOT, 'src/app/api/mp/checkout/route.ts'),
+  'utf8',
+);
+const webhookSrc = readFileSync(
+  path.join(ROOT, 'src/app/api/mp/webhook/route.ts'),
+  'utf8',
+);
+const cancelSrc = readFileSync(
+  path.join(ROOT, 'src/app/api/mp/cancel/route.ts'),
+  'utf8',
+);
+const envExampleSrc = readFileSync(path.join(ROOT, '.env.example'), 'utf8');
 
 let pass = 0;
 let fail = 0;
@@ -1792,15 +1812,17 @@ section('22 · Sem tela de primeiro acesso');
     'trava do primeiro acesso removida',
   );
 
-  // enterOwnerArea vai direto pro painel do dono.
+  // enterOwnerArea vai direto pro painel do dono (Home quando o
+  // acesso está liberado; tela de Planos quando está bloqueado por
+  // falta de pagamento — ownerLandingView decide).
   const enterOwnerSrc = pageSrc.slice(
     pageSrc.indexOf('async function enterOwnerArea'),
     pageSrc.indexOf('async function handleOwnerLogin'),
   );
   has(
     enterOwnerSrc,
-    "setView(isPrintCenterParam() ? 'print-center' : 'owner-home')",
-    'enterOwnerArea vai pra Home (ou pra central, no ?central=impressao)',
+    'setView(ownerLandingView(enteredRestaurant))',
+    'enterOwnerArea vai pra Home ou pra Planos (ou pra central, no ?central=impressao)',
   );
   notHas(enterOwnerSrc, "'setup'", 'enterOwnerArea sem setup');
 
@@ -1813,8 +1835,8 @@ section('22 · Sem tela de primeiro acesso');
   );
   has(
     bootSrc,
-    "setView(isPrintCenterParam() ? 'print-center' : 'owner-home')",
-    'boot do dono vai pra Home (ou pra central, no ?central=impressao)',
+    'setView(ownerLandingView(bootRestaurant))',
+    'boot do dono vai pra Home ou pra Planos (ou pra central, no ?central=impressao)',
   );
   // O 'setup' que resta no boot é o modo do acesso do admin (/adm),
   // não a tela de primeiro acesso: a restauração do dono não tem setup.
@@ -3200,8 +3222,8 @@ section('32 · Financeiro — paleta ComandaJá (escuro, dourado, laranja)');
     'painel do dono: tema aplicado na raiz das telas do dono',
   );
   check(
-    'painel do dono: fin-theme nas 5 telas do dono (e em nenhuma outra)',
-    (pageSrc.match(/app app-owner fin-theme/g) || []).length === 5,
+    'painel do dono: fin-theme nas 6 telas do dono (e em nenhuma outra)',
+    (pageSrc.match(/app app-owner fin-theme/g) || []).length === 6,
   );
   // Variáveis da paleta.
   check(
@@ -3278,10 +3300,8 @@ section('33 · Painel do dono — Home, menu ⋯ e blocos profissionais');
   has(pageSrc, "view === 'owner-home'", 'home: rota de renderização');
   has(pageSrc, "| 'owner-home'", 'home: tela no tipo View');
   check(
-    'home: dono cai na Home ao entrar (login e sessão restaurada)',
-    (pageSrc.match(
-      /setView\(isPrintCenterParam\(\) \? 'print-center' : 'owner-home'\)/g,
-    ) || []).length === 2,
+    'home: dono cai na Home ao entrar quando não está bloqueado (ownerLandingView no login e na sessão restaurada)',
+    (pageSrc.match(/setView\(ownerLandingView\(/g) || []).length === 2,
   );
   // Conteúdo da Home: só vendas — total de hoje, total de 7 dias, gráfico.
   has(pageSrc, 'Total vendido hoje', 'home: total de hoje em destaque');
@@ -4017,6 +4037,399 @@ section('36 · Apresentação em tela cheia no tablet');
     'CSS: .app.landing continua com 720px na base',
     cssSrc.includes('.app.landing {\n  background: #17110c;'),
   );
+}
+
+section('37 · Pagamento automático (Mercado Pago)');
+{
+  const has = (src, s, name) => check(name, src.includes(s));
+  const DAY = 24 * 60 * 60 * 1000;
+  const agora = new Date();
+  const iso = (ms) => new Date(ms).toISOString();
+  const rest = (over) => ({
+    id: 'rest-teste',
+    name: 'Teste',
+    created_at: iso(agora.getTime()),
+    ...over,
+  });
+
+  // --- accessStatus: trial / ativo / tolerância / bloqueado.
+  check(
+    'accessStatus: trial ativo (cadastro há 1 dia, restam 2)',
+    (() => {
+      const a = store.accessStatus(
+        rest({ created_at: iso(agora.getTime() - 1 * DAY) }),
+        agora,
+      );
+      return a.state === 'trial' && a.daysLeft === 2;
+    })(),
+  );
+  check(
+    'accessStatus: trial expirado sem assinatura = blocked',
+    store.accessStatus(
+      rest({ created_at: iso(agora.getTime() - 4 * DAY) }),
+      agora,
+    ).state === 'blocked',
+  );
+  check(
+    'accessStatus: assinatura ativa com paid_until futuro = active',
+    (() => {
+      const a = store.accessStatus(
+        rest({
+          created_at: iso(agora.getTime() - 10 * DAY),
+          subscription_status: 'active',
+          paid_until: iso(agora.getTime() + 30 * DAY),
+        }),
+        agora,
+      );
+      return a.state === 'active' && a.daysLeft === 30 && a.inGrace === false;
+    })(),
+  );
+  check(
+    'accessStatus: paid_until vencido dentro da tolerância (1 dia) = active em retentativa',
+    (() => {
+      const a = store.accessStatus(
+        rest({
+          created_at: iso(agora.getTime() - 10 * DAY),
+          subscription_status: 'active',
+          paid_until: iso(agora.getTime() - 1 * DAY),
+        }),
+        agora,
+      );
+      return a.state === 'active' && a.inGrace === true;
+    })(),
+  );
+  check(
+    'accessStatus: paid_until vencido fora da tolerância (4 dias) = blocked',
+    store.accessStatus(
+      rest({
+        created_at: iso(agora.getTime() - 10 * DAY),
+        subscription_status: 'active',
+        paid_until: iso(agora.getTime() - 4 * DAY),
+      }),
+      agora,
+    ).state === 'blocked',
+  );
+  check(
+    'accessStatus: cancelada com paid_until futuro = blocked',
+    store.accessStatus(
+      rest({
+        created_at: iso(agora.getTime() - 10 * DAY),
+        subscription_status: 'canceled',
+        paid_until: iso(agora.getTime() + 30 * DAY),
+      }),
+      agora,
+    ).state === 'blocked',
+  );
+  check(
+    'accessStatus: status desconhecido = blocked (nunca libera por palpite)',
+    store.accessStatus(
+      rest({
+        created_at: iso(agora.getTime() - 10 * DAY),
+        subscription_status: 'inexistente',
+        paid_until: iso(agora.getTime() + 30 * DAY),
+      }),
+      agora,
+    ).state === 'blocked',
+  );
+  check(
+    'accessStatus: past_due dentro da tolerância continua ativo',
+    store.accessStatus(
+      rest({
+        created_at: iso(agora.getTime() - 10 * DAY),
+        subscription_status: 'past_due',
+        paid_until: iso(agora.getTime() - 2 * DAY),
+      }),
+      agora,
+    ).state === 'active',
+  );
+  check('tolerância de retentativa é 3 dias', store.ACCESS_GRACE_DAYS === 3);
+
+  // --- buildPreapprovalPayload: preço vem do plano, nunca do cliente.
+  check('preço mensal em centavos é 6999', mp.PLAN_PRICES.monthly === 6999);
+  check('preço anual em centavos é 49999', mp.PLAN_PRICES.annual === 49999);
+  const mensalPayload = mp.buildPreapprovalPayload({
+    restaurantId: 'rest-123',
+    plan: 'monthly',
+    payerEmail: 'dono@restaurante.com.br',
+    notificationUrl: 'https://x.com.br/api/mp/webhook?source_news=webhooks',
+    backUrl: 'https://x.com.br/?tela=planos',
+  });
+  check(
+    'payload mensal: R$ 69,99, 1x por mês, BRL',
+    mensalPayload.auto_recurring.transaction_amount === 69.99 &&
+      mensalPayload.auto_recurring.frequency === 1 &&
+      mensalPayload.auto_recurring.frequency_type === 'months' &&
+      mensalPayload.auto_recurring.currency_id === 'BRL',
+  );
+  check(
+    'payload mensal: external_reference é o id do restaurante',
+    mensalPayload.external_reference === 'rest-123',
+  );
+  check(
+    'payload mensal: payer_email e back_url certos, status pending',
+    mensalPayload.payer_email === 'dono@restaurante.com.br' &&
+      mensalPayload.back_url === 'https://x.com.br/?tela=planos' &&
+      mensalPayload.status === 'pending',
+  );
+  check(
+    'payload: sem free_trial (o trial de 3 dias é do app)',
+    !('free_trial' in mensalPayload) &&
+      !JSON.stringify(mensalPayload).includes('free_trial'),
+  );
+  const anualPayload = mp.buildPreapprovalPayload({
+    restaurantId: 'rest-123',
+    plan: 'annual',
+    payerEmail: 'dono@restaurante.com.br',
+    notificationUrl: 'https://x.com.br/api/mp/webhook?source_news=webhooks',
+    backUrl: 'https://x.com.br/?tela=planos',
+  });
+  check(
+    'payload anual: R$ 499,99, 12x por mês (não existe frequency_type years)',
+    anualPayload.auto_recurring.transaction_amount === 499.99 &&
+      anualPayload.auto_recurring.frequency === 12 &&
+      anualPayload.auto_recurring.frequency_type === 'months',
+  );
+
+  // --- decideSubscriptionUpdate: só o GET confirmado decide.
+  check(
+    'decide: pré-aprovação authorized (mensal) libera com paid_until +1 mês',
+    (() => {
+      const d = mp.decideSubscriptionUpdate({
+        webhookType: 'subscription_preapproval',
+        preapproval: {
+          id: 'pre-1',
+          status: 'authorized',
+          auto_recurring: {
+            frequency: 1,
+            frequency_type: 'months',
+            transaction_amount: 69.99,
+          },
+        },
+        now: agora,
+      });
+      return (
+        d.action === 'activate' &&
+        d.plan === 'monthly' &&
+        d.subscriptionStatus === 'active' &&
+        d.paidUntil === mp.addMonths(agora, 1).toISOString()
+      );
+    })(),
+  );
+  check(
+    'decide: authorized (anual) + pagamento approved libera +12 meses',
+    (() => {
+      const d = mp.decideSubscriptionUpdate({
+        webhookType: 'subscription_authorized_payment',
+        preapproval: {
+          id: 'pre-2',
+          status: 'authorized',
+          auto_recurring: {
+            frequency: 12,
+            frequency_type: 'months',
+            transaction_amount: 499.99,
+          },
+        },
+        payment: { id: 'pay-1', status: 'approved' },
+        now: agora,
+      });
+      return (
+        d.action === 'activate' &&
+        d.plan === 'annual' &&
+        d.paidUntil === mp.addMonths(agora, 12).toISOString()
+      );
+    })(),
+  );
+  check(
+    'decide: pré-aprovação cancelled bloqueia',
+    (() => {
+      const d = mp.decideSubscriptionUpdate({
+        webhookType: 'subscription_preapproval',
+        preapproval: { id: 'pre-3', status: 'cancelled' },
+        now: agora,
+      });
+      return d.action === 'block' && d.subscriptionStatus === 'canceled';
+    })(),
+  );
+  check(
+    'decide: pagamento recusado mantém (não libera nem bloqueia na hora)',
+    mp.decideSubscriptionUpdate({
+      webhookType: 'subscription_authorized_payment',
+      preapproval: {
+        id: 'pre-4',
+        status: 'authorized',
+        auto_recurring: {
+          frequency: 1,
+          frequency_type: 'months',
+          transaction_amount: 69.99,
+        },
+      },
+      payment: { id: 'pay-2', status: 'rejected' },
+      now: agora,
+    }).action === 'keep',
+  );
+  check(
+    'decide: pré-aprovação pending não mexe no banco',
+    mp.decideSubscriptionUpdate({
+      webhookType: 'subscription_preapproval',
+      preapproval: { id: 'pre-5', status: 'pending' },
+      now: agora,
+    }).action === 'none',
+  );
+  check(
+    'decide: status desconhecido não libera',
+    mp.decideSubscriptionUpdate({
+      webhookType: 'subscription_preapproval',
+      preapproval: { id: 'pre-6', status: 'desconhecido' },
+      now: agora,
+    }).action === 'none',
+  );
+
+  // --- Store (modo local): plano + assinatura gravam e liberam.
+  const hash = await store.hashPassword('senha-pag-123');
+  const pag = await store.registerRestaurant({
+    restaurantName: 'Restaurante Pagamento',
+    ownerName: 'Paulo',
+    login: 'dono-paulo',
+    passwordHash: hash,
+    plan: 'monthly',
+  });
+  await store.updateRestaurantPlan(pag.restaurant.id, 'annual', 'paulo@rest.com.br');
+  const afterPlan = await store.getRestaurant(pag.restaurant.id);
+  check(
+    'updateRestaurantPlan grava plano anual + e-mail',
+    afterPlan?.plan === 'annual' && afterPlan?.billing_email === 'paulo@rest.com.br',
+  );
+  await store.updateRestaurantSubscription(pag.restaurant.id, {
+    subscription_status: 'active',
+    mp_preapproval_id: 'pre-teste-1',
+    paid_until: iso(agora.getTime() + 30 * DAY),
+  });
+  const afterSub = await store.getRestaurant(pag.restaurant.id);
+  check(
+    'updateRestaurantSubscription grava status + pré-aprovação + paid_until',
+    afterSub?.subscription_status === 'active' &&
+      afterSub?.mp_preapproval_id === 'pre-teste-1' &&
+      afterSub?.paid_until === iso(agora.getTime() + 30 * DAY),
+  );
+
+  // --- Trava (modo local): com o acesso bloqueado, mesa nova não
+  // abre e pedido novo não envia — mas a mesa aberta pode fechar.
+  const garcomPag = await store.createWaiter('Pagu', 'garcom-pagu', hash);
+  const pratoPag = await store.createProduct({
+    name: 'Prato Pagamento',
+    price_cents: 1000,
+    category: 'Almoço',
+    prints_in: 'kitchen',
+  });
+  const orderPag = await store.createOrder(1, garcomPag);
+  await store.addItem(orderPag.id, pratoPag);
+  // Envelhece o cadastro 10 dias (trial acabou) e cancela a assinatura.
+  const rawDb = JSON.parse(mem.get('garcom_db_v1'));
+  const rowPag = rawDb.restaurants.find((r) => r.id === pag.restaurant.id);
+  rowPag.created_at = iso(agora.getTime() - 10 * DAY);
+  mem.set('garcom_db_v1', JSON.stringify(rawDb));
+  await store.updateRestaurantSubscription(pag.restaurant.id, {
+    subscription_status: 'canceled',
+  });
+  check(
+    'restaurante com trial vencido + assinatura cancelada está bloqueado',
+    store.accessStatus(await store.getRestaurant(pag.restaurant.id), agora)
+      .state === 'blocked',
+  );
+  await throwsAsync(
+    () => store.createOrder(2, garcomPag),
+    'bloqueado: abrir mesa nova é rejeitado no store',
+  );
+  await throwsAsync(
+    () => store.sendOrder(orderPag.id),
+    'bloqueado: enviar pedido novo é rejeitado no store',
+  );
+  const billPag = await store.closeOrder(orderPag.id, 0);
+  check(
+    'bloqueado: mesa já aberta ainda pode ser fechada',
+    billPag.total_cents === 1000,
+  );
+
+  // --- SQL: colunas novas no schema completo e no arquivo mínimo.
+  for (const [src, label] of [
+    [sqlSrc, 'supabase.sql'],
+    [mpSqlSrc, 'supabase-pagamento-mp.sql'],
+  ]) {
+    has(src, 'subscription_status', `${label}: coluna subscription_status`);
+    has(src, 'mp_preapproval_id', `${label}: coluna mp_preapproval_id`);
+    has(src, 'paid_until', `${label}: coluna paid_until`);
+    has(src, 'billing_email', `${label}: coluna billing_email`);
+    has(src, 'add column if not exists', `${label}: ALTER idempotente`);
+  }
+  has(
+    sqlSrc,
+    "check (subscription_status in ('trial', 'active', 'past_due', 'canceled'))",
+    'supabase.sql: check dos 4 estados da assinatura',
+  );
+
+  // --- Tipos: campos novos opcionais no Restaurant.
+  has(typesSrc, 'SubscriptionStatus', 'types: tipo SubscriptionStatus');
+  has(typesSrc, 'mp_preapproval_id?: string | null', 'types: mp_preapproval_id opcional');
+  has(typesSrc, 'paid_until?: string | null', 'types: paid_until opcional');
+  has(typesSrc, 'billing_email?: string | null', 'types: billing_email opcional');
+
+  // --- Rotas de API: checkout / webhook / cancel.
+  has(checkoutSrc, 'MP_ACCESS_TOKEN', 'checkout: usa MP_ACCESS_TOKEN');
+  has(checkoutSrc, 'init_point', 'checkout: devolve init_point');
+  has(checkoutSrc, 'source_news=webhooks', 'checkout: webhook com ?source_news=webhooks');
+  has(checkoutSrc, 'tela=planos', 'checkout: back_url volta pra tela de Planos');
+  has(checkoutSrc, 'buildPreapprovalPayload', 'checkout: payload montado em mp.ts');
+  has(checkoutSrc, '503', 'checkout: sem token responde 503 com erro claro');
+  has(checkoutSrc, 'pagamento ainda não está configurado', 'checkout: erro claro em pt-BR sem token');
+  has(webhookSrc, 'x-signature', 'webhook: valida x-signature');
+  has(webhookSrc, 'decideSubscriptionUpdate', 'webhook: decide pelo GET confirmado');
+  has(webhookSrc, '/preapproval/', 'webhook: confirma com GET /preapproval');
+  has(webhookSrc, '/v1/payments/', 'webhook: confirma com GET /v1/payments');
+  has(webhookSrc, 'received: true', 'webhook: responde 200 rápido');
+  has(cancelSrc, "status: 'canceled'", 'cancel: cancela a pré-aprovação no MP');
+  has(cancelSrc, 'MP_ACCESS_TOKEN', 'cancel: usa MP_ACCESS_TOKEN');
+  has(cancelSrc, '503', 'cancel: sem token responde 503 com erro claro');
+
+  // --- .env.example: vars novas, sem NEXT_PUBLIC_ no token.
+  has(envExampleSrc, 'MP_ACCESS_TOKEN', '.env.example: MP_ACCESS_TOKEN');
+  has(envExampleSrc, 'MP_WEBHOOK_SECRET', '.env.example: MP_WEBHOOK_SECRET');
+  check(
+    '.env.example: token nunca com NEXT_PUBLIC_',
+    !envExampleSrc.includes('NEXT_PUBLIC_MP_ACCESS_TOKEN'),
+  );
+
+  // --- Tela de Planos e trava na página.
+  has(pageSrc, 'owner-plans', 'página: view owner-plans');
+  has(pageSrc, 'OwnerPlansView', 'página: componente OwnerPlansView');
+  has(
+    pageSrc,
+    "{ tab: 'plans', label: 'Planos', view: 'owner-plans' }",
+    'página: Planos no menu ⋯ do dono',
+  );
+  has(pageSrc, "q.get('tela') === 'planos'", 'página: ?tela=planos abre a tela de Planos');
+  has(pageSrc, 'accessBlockedNow', 'página: trava do garçom confere o bloqueio');
+  has(pageSrc, 'isAccessBlocked(restaurant)', 'página: aviso de bloqueio na tela de Mesas');
+  has(pageSrc, 'Assinatura bloqueada', 'página: aviso de bloqueio sem valores');
+  has(pageSrc, 'Pix não é débito', 'página: aviso de que Pix não é débito automático');
+  has(pageSrc, 'Economize R$ 339,89 por ano', 'página: selo de economia do plano Anual');
+  has(pageSrc, '/api/mp/checkout', 'página: botão Assinar chama o checkout');
+  has(pageSrc, '/api/mp/cancel', 'página: botão Cancelar chama o cancel');
+  has(pageSrc, 'data.init_point', 'página: redireciona pro init_point do Mercado Pago');
+  has(storeSrc, 'accessStatus', 'store: accessStatus');
+  has(storeSrc, 'updateRestaurantPlan', 'store: updateRestaurantPlan');
+  has(storeSrc, 'updateRestaurantSubscription', 'store: updateRestaurantSubscription');
+  has(storeSrc, 'isAccessBlocked', 'store: isAccessBlocked');
+
+  // --- CSS da tela de Planos (paleta do painel do dono).
+  has(cssSrc, '.plans-grid', 'CSS: grade de planos (.plans-grid)');
+  has(cssSrc, '.plans-card', 'CSS: cartão de plano (.plans-card)');
+  has(cssSrc, '.plans-price', 'CSS: preço do plano (.plans-price)');
+  has(cssSrc, '.plans-badge', 'CSS: selo de economia (.plans-badge)');
+  has(cssSrc, '#e8c15a', 'CSS: dourado do painel na tela de Planos');
+
+  // --- mp.ts registra as decisões (sem free_trial, sem Pix automático).
+  has(mpSrc, 'free_trial', 'mp.ts: documenta por que NÃO usa free_trial');
+  has(mpSrc, 'Pix Automático', 'mp.ts: documenta que Pix automático não existe na API');
 }
 
 console.log(`\n========================================`);

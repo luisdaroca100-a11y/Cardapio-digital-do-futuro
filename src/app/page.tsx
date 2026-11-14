@@ -67,6 +67,7 @@ type View =
   | 'owner-waiters'
   | 'owner-menu'
   | 'owner-settings'
+  | 'owner-plans'
   | 'print-center'
   | 'admin';
 
@@ -362,6 +363,28 @@ function isPrintCenterParam(): boolean {
   return q.get('central') === 'impressao';
 }
 
+/** true quando o endereço pede a tela de Planos do dono:
+ * ?tela=planos — é pra onde o Mercado Pago devolve o dono depois
+ * de autorizar a assinatura (back_url do checkout). */
+function isPlansParam(): boolean {
+  if (typeof window === 'undefined') return false;
+  const q = new URLSearchParams(window.location.search);
+  return q.get('tela') === 'planos';
+}
+
+/** Tela inicial do dono depois do login: central de impressão no
+ * aparelho do balcão; tela de Planos quando o endereço pede
+ * (?tela=planos) ou o acesso está bloqueado por falta de pagamento;
+ * senão a Home (Início). */
+function ownerLandingView(restaurant: Restaurant | null): View {
+  if (isPrintCenterParam()) return 'print-center';
+  if (isPlansParam()) return 'owner-plans';
+  if (restaurant && store.accessStatus(restaurant).state === 'blocked') {
+    return 'owner-plans';
+  }
+  return 'owner-home';
+}
+
 /** Rótulo do setor da impressora na tela. */
 function printerSectorLabel(sector: PrinterSector): string {
   return sector === 'kitchen'
@@ -501,6 +524,14 @@ function GarcomApp() {
     setProducts(p);
   }, []);
 
+  /** Recarrega o restaurante ativo (plano/assinatura) — usado pela
+   * tela de Planos depois de assinar ou cancelar. */
+  const refreshRestaurant = useCallback(async () => {
+    const id = store.getActiveRestaurantId();
+    if (!id) return;
+    setRestaurant(await store.getRestaurant(id));
+  }, []);
+
   const refresh = useCallback(async () => {
     const [s, p, o] = await Promise.all([
       store.getSettings(),
@@ -570,7 +601,8 @@ function GarcomApp() {
               const rid = owner?.restaurant_id ?? s.restaurant_id;
               if (owner && owner.id === s.id && rid) {
                 store.setActiveRestaurant(rid);
-                setRestaurant(await store.getRestaurant(rid));
+                const bootRestaurant = await store.getRestaurant(rid);
+                setRestaurant(bootRestaurant);
                 setOwnerSession({
                   id: owner.id,
                   name: owner.name,
@@ -583,7 +615,9 @@ function GarcomApp() {
                 // abas certas, lá dentro. No endereço da central
                 // de impressão (?central=impressao), cai direto nela:
                 // é o aparelho do balcão, que fica sempre aberto.
-                setView(isPrintCenterParam() ? 'print-center' : 'owner-home');
+                // Com o acesso bloqueado por falta de pagamento (ou
+                // ?tela=planos), cai na tela de Planos.
+                setView(ownerLandingView(bootRestaurant));
                 return;
               }
             } catch {
@@ -923,7 +957,10 @@ function GarcomApp() {
     // logo após o cadastro; depois do login ele é limpo.
     setRegisteredLogin('');
     store.setActiveRestaurant(owner.restaurant_id);
-    setRestaurant(await store.getRestaurant(owner.restaurant_id));
+    const enteredRestaurant = await store.getRestaurant(
+      owner.restaurant_id,
+    );
+    setRestaurant(enteredRestaurant);
     const s: Session = {
       id: owner.id,
       name: owner.name,
@@ -937,7 +974,9 @@ function GarcomApp() {
     // O dono cai direto na Home (Início), mesmo com 0 garçons —
     // garçons e cardápio são cadastrados nas abas certas.
     // No endereço da central (?central=impressao), cai direto nela.
-    setView(isPrintCenterParam() ? 'print-center' : 'owner-home');
+    // Com o acesso bloqueado por falta de pagamento (ou ?tela=
+    // planos), cai na tela de Planos.
+    setView(ownerLandingView(enteredRestaurant));
   }
 
   async function handleOwnerLogin(login: string, password: string) {
@@ -1143,6 +1182,17 @@ function GarcomApp() {
     return store.isDayClosed(fresh);
   }
 
+  /**
+   * Confere no banco se o acesso está bloqueado por falta de
+   * pagamento (trial acabou sem assinatura, ou assinatura vencida
+   * fora da tolerância de 3 dias). Vale pra todos os aparelhos.
+   */
+  async function accessBlockedNow(): Promise<boolean> {
+    const r = await store.getActiveRestaurant();
+    if (r) setRestaurant(r);
+    return r ? store.accessStatus(r).state === 'blocked' : false;
+  }
+
   async function openTable(tableNumber: number) {
     if (!session) return;
     setError('');
@@ -1162,6 +1212,23 @@ function GarcomApp() {
       );
       if (!mine) {
         setError('O dia está encerrado. Reabre amanhã às 9h.');
+        return;
+      }
+    }
+    // Assinatura bloqueada: o garçom só reabre uma mesa que já era
+    // dele (pra fechar); mesa nova não abre — o dono precisa
+    // escolher um plano na tela de Planos.
+    if (await accessBlockedNow()) {
+      const mine = freshOrders.find(
+        (o) =>
+          o.order.table_number === tableNumber &&
+          o.order.waiter_id === session.id &&
+          o.items.length > 0,
+      );
+      if (!mine) {
+        setError(
+          'Assinatura bloqueada — o período grátis acabou. Peça ao dono para escolher um plano.',
+        );
         return;
       }
     }
@@ -1281,6 +1348,14 @@ function GarcomApp() {
       );
       return;
     }
+    // Assinatura bloqueada: não entra item novo — só fechar as mesas
+    // abertas. O dono resolve na tela de Planos.
+    if (await accessBlockedNow()) {
+      setError(
+        'Assinatura bloqueada — o período grátis acabou. Peça ao dono para escolher um plano. Só dá pra fechar as mesas abertas.',
+      );
+      return;
+    }
     setBusy(true);
     try {
       let orderId = currentOrder.order.id;
@@ -1335,6 +1410,13 @@ function GarcomApp() {
       );
       return;
     }
+    // Assinatura bloqueada: o pedido não muda — só fechar a mesa.
+    if (await accessBlockedNow()) {
+      setError(
+        'Assinatura bloqueada — o período grátis acabou. Peça ao dono para escolher um plano. Só dá pra fechar a mesa.',
+      );
+      return;
+    }
     const next = item.qty + delta;
     if (next <= 0) {
       await store.removeItem(item.id);
@@ -1349,6 +1431,12 @@ function GarcomApp() {
     if (await dayClosedNow()) {
       setError(
         'O dia está encerrado. Não dá pra mudar o pedido — só fechar a mesa. Reabre amanhã às 9h.',
+      );
+      return;
+    }
+    if (await accessBlockedNow()) {
+      setError(
+        'Assinatura bloqueada — o período grátis acabou. Peça ao dono para escolher um plano. Só dá pra fechar a mesa.',
       );
       return;
     }
@@ -1454,6 +1542,13 @@ function GarcomApp() {
     if (await dayClosedNow()) {
       setError(
         'O dia está encerrado. Não dá pra enviar pedido novo. Reabre amanhã às 9h.',
+      );
+      return;
+    }
+    // Assinatura bloqueada: não envia pedido novo pra cozinha/bar.
+    if (await accessBlockedNow()) {
+      setError(
+        'Assinatura bloqueada — o período grátis acabou. Peça ao dono para escolher um plano. Só dá pra fechar as mesas abertas.',
       );
       return;
     }
@@ -1837,6 +1932,45 @@ function GarcomApp() {
 
   /* ------------------------------ ÁREA DO DONO ------------------------------ */
 
+  /* Trava de pagamento do dono: com o acesso bloqueado, nenhuma tela
+   * do dono abre (Início, Financeiro, Garçons, Cardápio, Ajustes) —
+   * cai na tela de Planos. O menu ⋯ continua acessível, mas as telas
+   * redirecionam pra cá. A central de impressão (?central=impressao)
+   * não entra na trava. */
+  if (
+    ownerSession &&
+    restaurant &&
+    store.accessStatus(restaurant).state === 'blocked' &&
+    view !== 'owner-plans' &&
+    (view === 'owner-home' ||
+      view === 'owner' ||
+      view === 'owner-waiters' ||
+      view === 'owner-menu' ||
+      view === 'owner-settings')
+  ) {
+    return (
+      <OwnerPlansView
+        restaurant={restaurant}
+        ownerName={ownerSession.name}
+        onNavigate={setView}
+        onLogout={handleOwnerLogout}
+        onChanged={refreshRestaurant}
+      />
+    );
+  }
+
+  if (view === 'owner-plans' && ownerSession) {
+    return (
+      <OwnerPlansView
+        restaurant={restaurant}
+        ownerName={ownerSession.name}
+        onNavigate={setView}
+        onLogout={handleOwnerLogout}
+        onChanged={refreshRestaurant}
+      />
+    );
+  }
+
   if (view === 'owner-home' && ownerSession) {
     return (
       <OwnerHomeView
@@ -1953,6 +2087,10 @@ function GarcomApp() {
     // Dia encerrado pelo dono: mesa nova não abre — só fechar as que já
     // estavam abertas. Reabre sozinho amanhã às 9h.
     const dayClosed = store.isDayClosed(settings);
+    // Assinatura bloqueada por falta de pagamento: mesma regra do dia
+    // encerrado — mesa nova não abre, pedido novo não entra; mesa já
+    // aberta ainda pode ser fechada.
+    const accessBlocked = store.isAccessBlocked(restaurant);
     const firstName = session.name.split(' ')[0];
     return (
       <div className="app">
@@ -2007,6 +2145,13 @@ function GarcomApp() {
               abertas ainda podem ser fechadas.
             </div>
           )}
+          {accessBlocked && (
+            <div className="error">
+              Assinatura bloqueada — o período grátis acabou. Peça ao dono
+              para escolher um plano. Não dá pra abrir mesa nova nem fazer
+              pedido novo; mesas já abertas ainda podem ser fechadas.
+            </div>
+          )}
           <input
             className="table-search"
             type="search"
@@ -2050,7 +2195,7 @@ function GarcomApp() {
                 key={n}
                 className="mesa-tile free"
                 data-tour={idx === 0 ? 'mesa-livre' : undefined}
-                disabled={busy || dayClosed}
+                disabled={busy || dayClosed || accessBlocked}
                 onClick={() => openTable(n)}
               >
                 <span className="mesa-open">
@@ -4259,7 +4404,7 @@ function PlatformAdminView({ onLogout }: { onLogout: () => void }) {
   );
 }
 
-type OwnerTab = 'home' | 'dashboard' | 'waiters' | 'menu' | 'settings';
+type OwnerTab = 'home' | 'dashboard' | 'waiters' | 'menu' | 'settings' | 'plans';
 
 /** Título de cada tela do dono (o cabeçalho mostra a tela atual). */
 const OWNER_TITLES: Record<OwnerTab, string> = {
@@ -4268,6 +4413,7 @@ const OWNER_TITLES: Record<OwnerTab, string> = {
   waiters: 'Garçons',
   menu: 'Cardápio',
   settings: 'Ajustes',
+  plans: 'Planos',
 };
 
 /** Itens do menu ⋯ do dono: cada tela tem seu botão lá dentro —
@@ -4278,6 +4424,7 @@ const OWNER_MENU: { tab: OwnerTab; label: string; view: View }[] = [
   { tab: 'waiters', label: 'Garçons', view: 'owner-waiters' },
   { tab: 'menu', label: 'Cardápio', view: 'owner-menu' },
   { tab: 'settings', label: 'Ajustes', view: 'owner-settings' },
+  { tab: 'plans', label: 'Planos', view: 'owner-plans' },
 ];
 
 /** Cabeçalho da área do dono: emblema da logo + título da tela atual
@@ -5026,6 +5173,280 @@ function HomeView({
  * vendas, separada de tudo — total de hoje, total dos últimos 7 dias
  * e o gráfico de vendas por dia. Nada de garçons, contas ou fechar
  * o dia aqui. */
+/* ------------------------------ PLANOS (DONO) ------------------------------ */
+
+/**
+ * Tela de Planos do dono: estado da assinatura (teste grátis, ativa
+ * ou bloqueada), os 2 planos (Mensal R$ 69,99/mês, Anual R$ 499,99/
+ * ano), e-mail da assinatura e os botões de assinar/cancelar.
+ *
+ * A assinatura é no cartão: o Mercado Pago cobra automaticamente a
+ * cada ciclo. Pix NÃO é débito automático — o Pix não renova a
+ * assinatura sozinho (e não há Pix automático na API de Assinaturas).
+ * O "Assinar" chama /api/mp/checkout e redireciona pro init_point
+ * do Mercado Pago; sem token configurado, mostra o aviso e NÃO
+ * quebra a tela.
+ */
+function OwnerPlansView({
+  restaurant,
+  ownerName,
+  onNavigate,
+  onLogout,
+  onChanged,
+}: {
+  restaurant: Restaurant | null;
+  ownerName: string;
+  onNavigate: (v: View) => void;
+  onLogout: () => void;
+  onChanged: () => Promise<void>;
+}) {
+  const [email, setEmail] = useState(restaurant?.billing_email ?? '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  const access = restaurant ? store.accessStatus(restaurant) : null;
+  const fmtDate = (d: Date) => d.toLocaleDateString('pt-BR');
+  const graceEnd = (d: Date) =>
+    new Date(d.getTime() + store.ACCESS_GRACE_DAYS * 24 * 60 * 60 * 1000);
+  const currentPlan = restaurant?.plan ?? null;
+  const hasSubscription =
+    restaurant?.subscription_status === 'active' ||
+    restaurant?.subscription_status === 'past_due';
+
+  async function subscribe(plan: PlanId) {
+    if (!restaurant) return;
+    setError('');
+    setNotice('');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setError('Informe um e-mail válido para a assinatura.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch('/api/mp/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          restaurantId: restaurant.id,
+          plan,
+          payerEmail: email.trim(),
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      if (!res.ok) {
+        setError(
+          typeof data.error === 'string'
+            ? data.error
+            : 'Não foi possível iniciar a assinatura. Tente de novo.',
+        );
+        return;
+      }
+      if (typeof data.init_point === 'string') {
+        window.location.href = data.init_point;
+      } else {
+        setError('O Mercado Pago não devolveu o link de pagamento. Tente de novo.');
+      }
+    } catch {
+      setError('Não foi possível falar com o servidor. Tente de novo.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelSubscription() {
+    if (!restaurant) return;
+    if (
+      !window.confirm(
+        'Cancelar a assinatura? O acesso continua até o fim do período já pago e depois bloqueia.',
+      )
+    ) {
+      return;
+    }
+    setError('');
+    setNotice('');
+    setBusy(true);
+    try {
+      const res = await fetch('/api/mp/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ restaurantId: restaurant.id }),
+      });
+      const data = (await res.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      if (!res.ok) {
+        setError(
+          typeof data.error === 'string'
+            ? data.error
+            : 'Não foi possível cancelar a assinatura. Tente de novo.',
+        );
+        return;
+      }
+      setNotice('Assinatura cancelada.');
+      await onChanged();
+    } catch {
+      setError('Não foi possível falar com o servidor. Tente de novo.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const plans: {
+    plan: PlanId;
+    name: string;
+    price: string;
+    per: string;
+    badge: string | null;
+  }[] = [
+    {
+      plan: 'monthly',
+      name: 'Mensal',
+      price: 'R$ 69,99',
+      per: 'por mês',
+      badge: null,
+    },
+    {
+      plan: 'annual',
+      name: 'Anual',
+      price: 'R$ 499,99',
+      per: 'por ano',
+      badge: 'Economize R$ 339,89 por ano',
+    },
+  ];
+
+  return (
+    <div className="app app-owner fin-theme">
+      <OwnerHeader
+        tab="plans"
+        restaurantName={restaurant?.name ?? ''}
+        ownerName={ownerName}
+        onNavigate={onNavigate}
+        onLogout={onLogout}
+      />
+      <div className="content">
+        {error && <div className="error">{error}</div>}
+        {notice && <div className="plans-notice">{notice}</div>}
+
+        <section className="fin-section plans-status">
+          <div className="fin-section-title">Sua assinatura</div>
+          {!access || !restaurant ? (
+            <p className="fin-section-sub">Carregando…</p>
+          ) : access.state === 'trial' ? (
+            <p className="fin-section-sub">
+              Você está no período grátis até{' '}
+              <strong>{fmtDate(access.trialEnd)}</strong> —{' '}
+              {access.daysLeft === 1
+                ? 'falta 1 dia'
+                : `faltam ${access.daysLeft} dias`}
+              . Escolha um plano abaixo pra continuar sem interrupção.
+            </p>
+          ) : access.state === 'active' ? (
+            <p className="fin-section-sub">
+              Assinatura ativa
+              {currentPlan === 'monthly'
+                ? ' — Plano Mensal'
+                : currentPlan === 'annual'
+                  ? ' — Plano Anual'
+                  : ''}
+              {access.paidUntil
+                ? ` até ${fmtDate(access.paidUntil)}`
+                : ''}
+              .{access.inGrace && access.paidUntil
+                ? ` O último pagamento não passou e o Mercado Pago está tentando de novo — se não passar até ${fmtDate(graceEnd(access.paidUntil))}, o acesso bloqueia.`
+                : ''}
+            </p>
+          ) : (
+            <p className="fin-section-sub">
+              <strong>
+                Seu período grátis acabou (ou a assinatura venceu).
+              </strong>{' '}
+              Escolha um plano abaixo pra continuar usando o sistema — o
+              acesso libera sozinho assim que o pagamento for confirmado.
+            </p>
+          )}
+        </section>
+
+        <section className="fin-section">
+          <div className="fin-section-title">Escolha o plano</div>
+          <div className="field plans-field">
+            <label htmlFor="plans-email">E-mail da assinatura</label>
+            <input
+              id="plans-email"
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              placeholder="voce@restaurante.com.br"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <p className="hint">
+              É pra esse e-mail que o Mercado Pago envia a cobrança.
+            </p>
+          </div>
+          <div className="plans-grid">
+            {plans.map((p) => {
+              const isCurrent = currentPlan === p.plan && hasSubscription;
+              return (
+                <div
+                  key={p.plan}
+                  className={`plans-card${isCurrent ? ' plans-current' : ''}`}
+                >
+                  {p.badge && (
+                    <span className="plans-badge">{p.badge}</span>
+                  )}
+                  <div className="plans-name">{p.name}</div>
+                  <div className="plans-price">{p.price}</div>
+                  <div className="plans-per">{p.per}</div>
+                  {isCurrent && (
+                    <span className="plans-current-tag">Plano atual</span>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-orange plans-subscribe"
+                    disabled={busy}
+                    onClick={() => void subscribe(p.plan)}
+                  >
+                    {busy
+                      ? 'Abrindo…'
+                      : isCurrent
+                        ? 'Renovar assinatura'
+                        : `Assinar ${p.name}`}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <p className="plans-note">
+            A assinatura é no cartão: o Mercado Pago cobra automaticamente
+            todo mês (Mensal) ou todo ano (Anual). Pix não é débito
+            automático — o Pix não renova a assinatura sozinho.
+          </p>
+          <p className="plans-note">
+            Trocar de plano (Mensal ↔ Anual) cancela a assinatura atual e
+            cria uma nova — o período já pago não se perde: o acesso
+            continua até o fim dele.
+          </p>
+          {hasSubscription && (
+            <button
+              type="button"
+              className="btn btn-danger-ghost"
+              disabled={busy}
+              onClick={() => void cancelSubscription()}
+            >
+              Cancelar assinatura
+            </button>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
 function OwnerHomeView({
   bills,
   restaurantName,

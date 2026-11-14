@@ -5,6 +5,19 @@ export type PrintsIn = 'kitchen' | 'bar';
  * período grátis até o dono escolher o plano. */
 export type PlanId = 'monthly' | 'annual';
 
+/**
+ * Estado da assinatura do Mercado Pago, persistido no restaurante.
+ *  - 'trial': ainda no período grátis de 3 dias (ou sem assinatura)
+ *  - 'active': assinatura autorizada e paga
+ *  - 'past_due': parcela em retentativa no Mercado Pago (o acesso
+ *    continua valendo dentro da tolerância de 3 dias após o
+ *    paid_until — ver accessStatus em src/lib/store.ts)
+ *  - 'canceled': assinatura cancelada (pelo dono ou pelo MP)
+ * O estado DERIVADO (trial/ativo/bloqueado) é calculado por
+ * accessStatus(); aqui fica só o fato guardado no banco.
+ */
+export type SubscriptionStatus = 'trial' | 'active' | 'past_due' | 'canceled';
+
 /** Restaurante da plataforma multi-restaurante. Cada restaurante tem
  * seu dono, seus garçons, seu cardápio, seus pedidos e suas vendas —
  * ninguém vê dados de outro restaurante. */
@@ -16,6 +29,18 @@ export interface Restaurant {
    * escolhido — fica no período grátis de 3 dias. */
   plan?: PlanId | null;
   created_at: string;
+  /** estado da assinatura do Mercado Pago (ver SubscriptionStatus).
+   * Ausente/null = restaurante antigo, sem assinatura — vale o trial
+   * de 3 dias contado do created_at. */
+  subscription_status?: SubscriptionStatus | null;
+  /** id da pré-aprovação (assinatura) no Mercado Pago — guardado na
+   * criação do checkout; o webhook confirma por ele. */
+  mp_preapproval_id?: string | null;
+  /** até quando a assinatura está paga (ISO). A partir daqui valem
+   * 3 dias de tolerância pra retentativa do Mercado Pago. */
+  paid_until?: string | null;
+  /** e-mail usado na assinatura do Mercado Pago (quem paga). */
+  billing_email?: string | null;
 }
 
 /** Administrador da plataforma (o Luis) — vê TODOS os restaurantes.
